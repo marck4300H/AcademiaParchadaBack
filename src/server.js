@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { supabase } from './config/supabase.js';
+import authRoutes from './routes/auth.routes.js';
 
 // Cargar variables de entorno
 dotenv.config();
@@ -9,11 +10,31 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middlewares
+// Configuración de CORS - ACTUALIZADO
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:5174',
+  'https://frontend-academic.vercel.app'
+];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-  credentials: true
+  origin: function (origin, callback) {
+    // Permitir requests sin origin (como Postman, apps móviles, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('No permitido por CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+// Middlewares
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -25,10 +46,9 @@ app.get('/', (req, res) => {
   });
 });
 
-// Ruta de health check y prueba de conexión a Supabase
+// Ruta de health check
 app.get('/health', async (req, res) => {
   try {
-    // Intentar hacer una query simple a Supabase
     const { data, error } = await supabase
       .from('usuario')
       .select('count')
@@ -51,11 +71,8 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// TODO: Importar y usar rutas aquí
-// import authRoutes from './routes/auth.routes.js';
-// import cursoRoutes from './routes/curso.routes.js';
-// app.use('/api/auth', authRoutes);
-// app.use('/api/cursos', cursoRoutes);
+// Rutas de la API
+app.use('/api/auth', authRoutes);
 
 // Manejo de rutas no encontradas
 app.use((req, res) => {
@@ -80,6 +97,7 @@ app.listen(PORT, () => {
   console.log(`🌍 Ambiente: ${process.env.NODE_ENV || 'development'}`);
   console.log(`📡 URL: http://localhost:${PORT}`);
   console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+  console.log(`🌐 CORS habilitado para: ${allowedOrigins.join(', ')}`);
 });
 
 export default app;
