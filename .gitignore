@@ -36,3 +36,4 @@ coverage/
 
 # Uploads temporales
 uploads/
+hashPassword.js
