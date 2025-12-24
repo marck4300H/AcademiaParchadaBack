@@ -1,35 +1,21 @@
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 
-// ⬇️ IMPORTANTE: Cargar variables AQUÍ ⬇️
 dotenv.config();
 
-// Verificación temporal
-console.log('\n🔍 [supabase.js] Verificando variables:');
-console.log('SUPABASE_URL:', process.env.SUPABASE_URL || '❌ NO DEFINIDA');
-console.log('SUPABASE_ANON_KEY:', process.env.SUPABASE_ANON_KEY ? '✅ Definida' : '❌ NO DEFINIDA');
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY; // ← CAMBIO AQUÍ (antes era SUPABASE_ANON_KEY)
 
-// Validar que existan
-if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
-  console.error('\n❌ ERROR: Faltan variables de entorno de Supabase');
-  console.error('Verifica tu archivo .env\n');
-  throw new Error('Faltan variables de entorno de Supabase');
+if (!supabaseUrl || !supabaseKey) {
+  throw new Error('Faltan variables de entorno de Supabase (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)');
 }
 
-// Crear cliente de Supabase
-export const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY,
-  {
-    auth: {
-      autoRefreshToken: true,
-      persistSession: true,
-      detectSessionInUrl: false
-    }
+// Cliente con Service Role Key - Bypass RLS
+export const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false
   }
-);
+});
 
-export const supabaseAdmin = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
-);
+console.log('✅ Supabase configurado correctamente (Service Role)');
