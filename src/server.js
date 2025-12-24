@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { supabase } from './config/supabase.js';
 import authRoutes from './routes/auth.routes.js';
+import asignaturaRoutes from './routes/asignatura.routes.js'
 
 // Cargar variables de entorno
 dotenv.config();
@@ -73,6 +74,7 @@ app.get('/health', async (req, res) => {
 
 // Rutas de la API
 app.use('/api/auth', authRoutes);
+app.use('/api/asignaturas', asignaturaRoutes);
 
 // Manejo de rutas no encontradas
 app.use((req, res) => {
