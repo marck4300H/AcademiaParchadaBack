@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { supabase } from './config/supabase.js';
 import authRoutes from './routes/auth.routes.js';
 import asignaturaRoutes from './routes/asignatura.routes.js';
+import profesorRoutes from './routes/profesor.routes.js'
 
 // Cargar variables de entorno
 dotenv.config();
@@ -96,6 +97,7 @@ app.get('/health', async (req, res) => {
 // ============================================
 app.use('/api/auth', authRoutes);
 app.use('/api/asignaturas', asignaturaRoutes);
+app.use('/api/profesores', profesorRoutes);
 
 // ============================================
 // MANEJO DE RUTAS NO ENCONTRADAS
