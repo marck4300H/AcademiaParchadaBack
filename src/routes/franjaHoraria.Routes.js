@@ -20,6 +20,7 @@ const router = express.Router();
  * CU-013: Crear Franja Horaria
  * POST /api/franjas-horarias
  * Acceso: profesor, administrador
+ * 
  */
 router.post(
   '/',
