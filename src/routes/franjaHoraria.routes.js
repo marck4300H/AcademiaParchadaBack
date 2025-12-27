@@ -12,7 +12,7 @@ import {
   listFranjasByProfesor,
   updateFranjaHoraria,
   deleteFranjaHoraria
-} from '../controllers/franjaHoraria.controller.js';
+} from '../controllers/franjaHoraria.Controller.js';
 
 const router = express.Router();
 
