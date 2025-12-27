@@ -6,7 +6,7 @@ import {
   updateFranjaValidator,
   deleteFranjaValidator,
   listFranjasByProfesorValidator
-} from '../validators/franjaHoraria.validator.js';
+} from '../validators/franjaHoraria.Validator.js';  // ✅ CORREGIDO: Validator con V mayúscula
 import {
   createFranjaHoraria,
   listFranjasByProfesor,
