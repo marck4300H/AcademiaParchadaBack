@@ -5,8 +5,9 @@ import { supabase } from './config/supabase.js';
 import authRoutes from './routes/auth.routes.js';
 import asignaturaRoutes from './routes/asignatura.routes.js';
 import profesorRoutes from './routes/profesor.routes.js'
-import franjaHorariaRoutes from './routes/franjaHoraria.routes.js'  // ✅ CORREGIDO: routes con minúscula
+import franjaHorariaRoutes from './routes/franjaHoraria.routes.js'  
 import clasePersonalizadaRoutes from './routes/clasePersonalizadaRoutes.js'
+import cursoRoutes from './routes/cursoRoutes.js'
 // Cargar variables de entorno
 dotenv.config();
 
@@ -101,6 +102,7 @@ app.use('/api/asignaturas', asignaturaRoutes);
 app.use('/api/profesores', profesorRoutes);
 app.use('/api/franjas-horarias', franjaHorariaRoutes);
 app.use('/api/clases-personalizadas', clasePersonalizadaRoutes);
+app.use('/api/cursos', cursoRoutes);
 
 
 // ============================================
