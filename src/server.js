@@ -5,7 +5,7 @@ import { supabase } from './config/supabase.js';
 import authRoutes from './routes/auth.routes.js';
 import asignaturaRoutes from './routes/asignatura.routes.js';
 import profesorRoutes from './routes/profesor.routes.js'
-import franjaHorariaRoutes from './routes/franjaHoraria.Routes.js'
+import franjaHorariaRoutes from './routes/franjaHoraria.routes.js'  // ✅ CORREGIDO: routes con minúscula
 import clasePersonalizadaRoutes from './routes/clasePersonalizadaRoutes.js'
 // Cargar variables de entorno
 dotenv.config();
