@@ -1,30 +1,40 @@
 import { supabase } from '../config/supabase.js';
+import { 
+  dividirEnFranjasDeUnaHora, 
+  validarFormatoHora,
+  calcularDiferenciaHoras 
+} from '../utils/franjaHelpers.js';
 
 /**
- * CU-013: Crear Franja Horaria
- * POST /api/franjas-horarias
- * Acceso: profesor (solo sus propias franjas), admin
+ * Crear franja(s) horaria(s) para un profesor
+ * Divide automáticamente en bloques de 1 hora
  */
-export const createFranjaHoraria = async (req, res) => {
+export const crearFranjaHoraria = async (req, res) => {
   try {
     const { profesor_id, dia_semana, hora_inicio, hora_fin } = req.body;
-    const userRole = req.user.rol;
-    const userId = req.user.id;
 
-    // 1. Verificar permisos: profesor solo puede crear sus propias franjas
-    if (userRole === 'profesor' && userId !== profesor_id) {
-      return res.status(403).json({
+    // Validar formato de horas
+    if (!validarFormatoHora(hora_inicio) || !validarFormatoHora(hora_fin)) {
+      return res.status(400).json({
         success: false,
-        message: 'No tienes permisos para crear franjas horarias de otro profesor'
+        message: 'Formato de hora inválido. Use HH:MM:SS (ej: 14:00:00)'
       });
     }
 
-    // 2. Verificar que el profesor existe
+    // Validar que hora_fin sea mayor que hora_inicio
+    const duracionTotal = calcularDiferenciaHoras(hora_inicio, hora_fin);
+    if (duracionTotal <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'La hora de fin debe ser mayor que la hora de inicio'
+      });
+    }
+
+    // Verificar que el profesor existe
     const { data: profesor, error: profesorError } = await supabase
       .from('usuario')
-      .select('id, nombre, apellido')
+      .select('id, rol')
       .eq('id', profesor_id)
-      .eq('rol', 'profesor')
       .single();
 
     if (profesorError || !profesor) {
@@ -34,378 +44,315 @@ export const createFranjaHoraria = async (req, res) => {
       });
     }
 
-    // 3. Verificar que no se solape con otra franja del mismo profesor
-    const { data: franjasExistentes, error: solapamientoError } = await supabase
+    if (profesor.rol !== 'profesor' && profesor.rol !== 'administrador') {
+      return res.status(400).json({
+        success: false,
+        message: 'El usuario debe tener rol de profesor o administrador'
+      });
+    }
+
+    console.log(`📅 Creando disponibilidad para profesor ${profesor_id}`);
+    console.log(`   Día: ${dia_semana}`);
+    console.log(`   Horario: ${hora_inicio} - ${hora_fin} (${duracionTotal}h)`);
+
+    // Dividir en franjas de 1 hora
+    const franjasDeUnaHora = dividirEnFranjasDeUnaHora(hora_inicio, hora_fin);
+    
+    console.log(`✂️ Dividiendo en ${franjasDeUnaHora.length} franjas de 1 hora`);
+
+    // Preparar datos para inserción
+    const franjasParaInsertar = franjasDeUnaHora.map(franja => ({
+      profesor_id,
+      dia_semana,
+      hora_inicio: franja.hora_inicio,
+      hora_fin: franja.hora_fin
+    }));
+
+    // Verificar solapamientos con franjas existentes
+    const { data: franjasExistentes } = await supabase
       .from('franja_horaria')
-      .select('id, hora_inicio, hora_fin')
+      .select('*')
       .eq('profesor_id', profesor_id)
       .eq('dia_semana', dia_semana);
 
-    if (solapamientoError) {
-      console.error('Error al verificar solapamiento:', solapamientoError);
-      return res.status(500).json({
-        success: false,
-        message: 'Error al verificar franjas existentes'
-      });
-    }
-
-    // Verificar solapamiento
-    const [horaInicioNueva, minInicioNueva] = hora_inicio.split(':').map(Number);
-    const [horaFinNueva, minFinNueva] = hora_fin.split(':').map(Number);
-    const minutosInicioNueva = horaInicioNueva * 60 + minInicioNueva;
-    const minutosFinNueva = horaFinNueva * 60 + minFinNueva;
-
-    for (const franja of franjasExistentes) {
-      const [horaInicioExist, minInicioExist] = franja.hora_inicio.split(':').map(Number);
-      const [horaFinExist, minFinExist] = franja.hora_fin.split(':').map(Number);
-      const minutosInicioExist = horaInicioExist * 60 + minInicioExist;
-      const minutosFinExist = horaFinExist * 60 + minFinExist;
-
-      if (minutosInicioNueva < minutosFinExist && minutosFinNueva > minutosInicioExist) {
-        return res.status(400).json({
-          success: false,
-          message: `La franja horaria se solapa con otra existente (${franja.hora_inicio} - ${franja.hora_fin})`
+    if (franjasExistentes && franjasExistentes.length > 0) {
+      for (const nuevaFranja of franjasParaInsertar) {
+        const hayConflicto = franjasExistentes.some(existente => {
+          // Verificar si hay solapamiento
+          return (
+            nuevaFranja.hora_inicio < existente.hora_fin &&
+            nuevaFranja.hora_fin > existente.hora_inicio
+          );
         });
+
+        if (hayConflicto) {
+          return res.status(400).json({
+            success: false,
+            message: `Ya existe una franja que se solapa con ${nuevaFranja.hora_inicio} - ${nuevaFranja.hora_fin}`
+          });
+        }
       }
     }
 
-    // 4. Crear franja horaria
-    const { data: nuevaFranja, error: insertError } = await supabase
+    // Insertar todas las franjas
+    const { data: franjasCreadas, error: insertError } = await supabase
       .from('franja_horaria')
-      .insert([
-        {
-          profesor_id,
-          dia_semana,
-          hora_inicio,
-          hora_fin
-        }
-      ])
-      .select()
-      .single();
+      .insert(franjasParaInsertar)
+      .select();
 
     if (insertError) {
-      console.error('Error al crear franja horaria:', insertError);
-      return res.status(500).json({
-        success: false,
-        message: 'Error al crear la franja horaria',
-        error: insertError.message
-      });
+      console.error('Error al crear franjas:', insertError);
+      throw insertError;
     }
 
-    // 5. Respuesta exitosa
-    res.status(201).json({
+    console.log(`✅ Se crearon ${franjasCreadas.length} franjas horarias`);
+
+    return res.status(201).json({
       success: true,
-      message: 'Franja horaria creada exitosamente',
+      message: `Se crearon ${franjasCreadas.length} franjas horarias de 1 hora`,
       data: {
-        franja: {
-          ...nuevaFranja,
-          profesor: {
-            id: profesor.id,
-            nombre: profesor.nombre,
-            apellido: profesor.apellido
-          }
+        franjas: franjasCreadas,
+        resumen: {
+          total_franjas: franjasCreadas.length,
+          bloque_original: `${hora_inicio} - ${hora_fin}`,
+          duracion_total: `${duracionTotal}h`
         }
       }
     });
 
   } catch (error) {
-    console.error('Error en createFranjaHoraria:', error);
-    res.status(500).json({
+    console.error('❌ Error al crear franja horaria:', error);
+    return res.status(500).json({
       success: false,
-      message: 'Error interno del servidor',
+      message: 'Error al crear franja horaria',
       error: error.message
     });
   }
 };
 
 /**
- * CU-014: Listar Franjas Horarias de Profesor
- * GET /api/franjas-horarias/profesor/:profesorId
- * Acceso: admin, profesor (solo sus propias franjas)
+ * Listar franjas horarias de un profesor
  */
-export const listFranjasByProfesor = async (req, res) => {
+export const listarFranjasProfesor = async (req, res) => {
   try {
-    const { profesorId } = req.params;
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 50;
-    const offset = (page - 1) * limit;
-    const userRole = req.user.rol;
-    const userId = req.user.id;
+    const { profesor_id } = req.params;
+    const { dia_semana } = req.query;
 
-    // 1. Verificar permisos
-    if (userRole === 'profesor' && userId !== profesorId) {
-      return res.status(403).json({
-        success: false,
-        message: 'No tienes permisos para ver las franjas horarias de otro profesor'
-      });
-    }
-
-    // 2. Verificar que el profesor existe
-    const { data: profesor, error: profesorError } = await supabase
-      .from('usuario')
-      .select('id, nombre, apellido, email')
-      .eq('id', profesorId)
-      .eq('rol', 'profesor')
-      .single();
-
-    if (profesorError || !profesor) {
-      return res.status(404).json({
-        success: false,
-        message: 'Profesor no encontrado'
-      });
-    }
-
-    // 3. Obtener franjas horarias con paginación
-    const { data: franjas, error: franjasError, count } = await supabase
-      .from('franja_horaria')
-      .select('*', { count: 'exact' })
-      .eq('profesor_id', profesorId)
-      .order('dia_semana', { ascending: true })
-      .order('hora_inicio', { ascending: true })
-      .range(offset, offset + limit - 1);
-
-    if (franjasError) {
-      console.error('Error al obtener franjas horarias:', franjasError);
-      return res.status(500).json({
-        success: false,
-        message: 'Error al obtener franjas horarias',
-        error: franjasError.message
-      });
-    }
-
-    // 4. Agrupar franjas por día
-    const diasOrden = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo'];
-    const franjasPorDia = {};
-    
-    diasOrden.forEach(dia => {
-      franjasPorDia[dia] = franjas.filter(f => f.dia_semana === dia);
-    });
-
-    // 5. Respuesta exitosa
-    res.json({
-      success: true,
-      data: {
-        profesor: {
-          id: profesor.id,
-          nombre: profesor.nombre,
-          apellido: profesor.apellido,
-          email: profesor.email
-        },
-        franjas: franjas,
-        franjasPorDia: franjasPorDia,
-        pagination: {
-          page,
-          limit,
-          total: count,
-          totalPages: Math.ceil(count / limit)
-        }
-      }
-    });
-
-  } catch (error) {
-    console.error('Error en listFranjasByProfesor:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error interno del servidor',
-      error: error.message
-    });
-  }
-};
-
-/**
- * CU-015: Editar Franja Horaria
- * PUT /api/franjas-horarias/:id
- * Acceso: profesor (solo sus propias franjas), admin
- */
-export const updateFranjaHoraria = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { dia_semana, hora_inicio, hora_fin } = req.body;
-    const userRole = req.user.rol;
-    const userId = req.user.id;
-
-    // 1. Verificar que la franja existe
-    const { data: franjaExistente, error: franjaError } = await supabase
+    let query = supabase
       .from('franja_horaria')
       .select('*')
-      .eq('id', id)
-      .single();
+      .eq('profesor_id', profesor_id)
+      .order('dia_semana', { ascending: true })
+      .order('hora_inicio', { ascending: true });
 
-    if (franjaError || !franjaExistente) {
-      return res.status(404).json({
-        success: false,
-        message: 'Franja horaria no encontrada'
-      });
+    if (dia_semana) {
+      query = query.eq('dia_semana', dia_semana);
     }
 
-    // 2. Verificar permisos
-    if (userRole === 'profesor' && userId !== franjaExistente.profesor_id) {
-      return res.status(403).json({
-        success: false,
-        message: 'No tienes permisos para editar franjas horarias de otro profesor'
-      });
+    const { data: franjas, error } = await query;
+
+    if (error) {
+      console.error('Error al listar franjas:', error);
+      throw error;
     }
 
-    // 3. Preparar datos a actualizar
-    const datosActualizados = {};
-    if (dia_semana) datosActualizados.dia_semana = dia_semana;
-    if (hora_inicio) datosActualizados.hora_inicio = hora_inicio;
-    if (hora_fin) datosActualizados.hora_fin = hora_fin;
+    // Agrupar franjas por día
+    const franjasPorDia = {};
+    franjas.forEach(franja => {
+      if (!franjasPorDia[franja.dia_semana]) {
+        franjasPorDia[franja.dia_semana] = [];
+      }
+      franjasPorDia[franja.dia_semana].push(franja);
+    });
 
-    // Verificar que hora_fin > hora_inicio
-    const horaInicioFinal = hora_inicio || franjaExistente.hora_inicio;
-    const horaFinFinal = hora_fin || franjaExistente.hora_fin;
+    return res.status(200).json({
+      success: true,
+      data: {
+        franjas,
+        franjas_por_dia: franjasPorDia,
+        total: franjas.length
+      }
+    });
 
-    const [hInicio, mInicio] = horaInicioFinal.split(':').map(Number);
-    const [hFin, mFin] = horaFinFinal.split(':').map(Number);
-    const minutosInicio = hInicio * 60 + mInicio;
-    const minutosFin = hFin * 60 + mFin;
+  } catch (error) {
+    console.error('❌ Error al listar franjas:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al obtener franjas horarias',
+      error: error.message
+    });
+  }
+};
 
-    if (minutosFin <= minutosInicio) {
+/**
+ * Eliminar una franja horaria específica
+ */
+export const eliminarFranjaHoraria = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verificar que no haya sesiones programadas usando esta franja
+    const { data: sesionesConFranja } = await supabase
+      .from('sesion_clase')
+      .select('id')
+      .contains('franja_horaria_ids', [id])
+      .eq('estado', 'programada');
+
+    if (sesionesConFranja && sesionesConFranja.length > 0) {
       return res.status(400).json({
         success: false,
-        message: 'La hora de fin debe ser posterior a la hora de inicio'
+        message: 'No se puede eliminar esta franja porque tiene sesiones programadas'
       });
     }
 
-    // 4. Verificar solapamiento con otras franjas del mismo día
-    const diaFinal = dia_semana || franjaExistente.dia_semana;
-
-    const { data: otrasFranjas, error: solapamientoError } = await supabase
-      .from('franja_horaria')
-      .select('id, hora_inicio, hora_fin')
-      .eq('profesor_id', franjaExistente.profesor_id)
-      .eq('dia_semana', diaFinal)
-      .neq('id', id);
-
-    if (solapamientoError) {
-      console.error('Error al verificar solapamiento:', solapamientoError);
-      return res.status(500).json({
-        success: false,
-        message: 'Error al verificar solapamiento'
-      });
-    }
-
-    // Verificar solapamiento
-    for (const franja of otrasFranjas) {
-      const [hInicioExist, mInicioExist] = franja.hora_inicio.split(':').map(Number);
-      const [hFinExist, mFinExist] = franja.hora_fin.split(':').map(Number);
-      const minutosInicioExist = hInicioExist * 60 + mInicioExist;
-      const minutosFinExist = hFinExist * 60 + mFinExist;
-
-      if (minutosInicio < minutosFinExist && minutosFin > minutosInicioExist) {
-        return res.status(400).json({
-          success: false,
-          message: `La franja horaria se solapa con otra existente (${franja.hora_inicio} - ${franja.hora_fin})`
-        });
-      }
-    }
-
-    // 5. Actualizar franja
-    const { data: franjaActualizada, error: updateError } = await supabase
-      .from('franja_horaria')
-      .update(datosActualizados)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (updateError) {
-      console.error('Error al actualizar franja horaria:', updateError);
-      return res.status(500).json({
-        success: false,
-        message: 'Error al actualizar la franja horaria',
-        error: updateError.message
-      });
-    }
-
-    // 6. Obtener datos del profesor
-    const { data: profesor } = await supabase
-      .from('usuario')
-      .select('id, nombre, apellido')
-      .eq('id', franjaActualizada.profesor_id)
-      .single();
-
-    // 7. Respuesta exitosa
-    res.json({
-      success: true,
-      message: 'Franja horaria actualizada exitosamente',
-      data: {
-        franja: {
-          ...franjaActualizada,
-          profesor: profesor
-        }
-      }
-    });
-
-  } catch (error) {
-    console.error('Error en updateFranjaHoraria:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error interno del servidor',
-      error: error.message
-    });
-  }
-};
-
-/**
- * CU-016: Eliminar Franja Horaria
- * DELETE /api/franjas-horarias/:id
- * Acceso: profesor (solo sus propias franjas), admin
- */
-export const deleteFranjaHoraria = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userRole = req.user.rol;
-    const userId = req.user.id;
-
-    // 1. Verificar que la franja existe
-    const { data: franja, error: franjaError } = await supabase
-      .from('franja_horaria')
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (franjaError || !franja) {
-      return res.status(404).json({
-        success: false,
-        message: 'Franja horaria no encontrada'
-      });
-    }
-
-    // 2. Verificar permisos
-    if (userRole === 'profesor' && userId !== franja.profesor_id) {
-      return res.status(403).json({
-        success: false,
-        message: 'No tienes permisos para eliminar franjas horarias de otro profesor'
-      });
-    }
-
-    // 3. Eliminar franja
-    const { error: deleteError } = await supabase
+    const { error } = await supabase
       .from('franja_horaria')
       .delete()
       .eq('id', id);
 
-    if (deleteError) {
-      console.error('Error al eliminar franja horaria:', deleteError);
-      return res.status(500).json({
-        success: false,
-        message: 'Error al eliminar la franja horaria',
-        error: deleteError.message
-      });
+    if (error) {
+      console.error('Error al eliminar franja:', error);
+      throw error;
     }
 
-    // 4. Respuesta exitosa
-    res.json({
+    return res.status(200).json({
       success: true,
-      message: `Franja horaria del ${franja.dia_semana} (${franja.hora_inicio} - ${franja.hora_fin}) eliminada exitosamente`
+      message: 'Franja horaria eliminada exitosamente'
     });
 
   } catch (error) {
-    console.error('Error en deleteFranjaHoraria:', error);
-    res.status(500).json({
+    console.error('❌ Error al eliminar franja:', error);
+    return res.status(500).json({
       success: false,
-      message: 'Error interno del servidor',
+      message: 'Error al eliminar franja horaria',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Eliminar todas las franjas de un profesor en un día específico
+ */
+export const eliminarFranjasPorDia = async (req, res) => {
+  try {
+    const { profesor_id } = req.params;
+    const { dia_semana } = req.body;
+
+    // Obtener IDs de las franjas a eliminar
+    const { data: franjasAEliminar } = await supabase
+      .from('franja_horaria')
+      .select('id')
+      .eq('profesor_id', profesor_id)
+      .eq('dia_semana', dia_semana);
+
+    if (!franjasAEliminar || franjasAEliminar.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No se encontraron franjas para ese día'
+      });
+    }
+
+    const idsAEliminar = franjasAEliminar.map(f => f.id);
+
+    // Verificar sesiones programadas
+    const { data: sesionesConFranjas } = await supabase
+      .from('sesion_clase')
+      .select('id')
+      .overlaps('franja_horaria_ids', idsAEliminar)
+      .eq('estado', 'programada');
+
+    if (sesionesConFranjas && sesionesConFranjas.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `No se pueden eliminar estas franjas porque ${sesionesConFranjas.length} sesión(es) están programadas`
+      });
+    }
+
+    // Eliminar franjas
+    const { error } = await supabase
+      .from('franja_horaria')
+      .delete()
+      .eq('profesor_id', profesor_id)
+      .eq('dia_semana', dia_semana);
+
+    if (error) {
+      console.error('Error al eliminar franjas:', error);
+      throw error;
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Se eliminaron ${franjasAEliminar.length} franjas del ${dia_semana}`
+    });
+
+  } catch (error) {
+    console.error('❌ Error al eliminar franjas por día:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al eliminar franjas horarias',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Obtener resumen de disponibilidad de un profesor
+ * Agrupa franjas consecutivas en bloques
+ */
+export const obtenerResumenDisponibilidad = async (req, res) => {
+  try {
+    const { profesor_id } = req.params;
+
+    const { data: franjas, error } = await supabase
+      .from('franja_horaria')
+      .select('*')
+      .eq('profesor_id', profesor_id)
+      .order('dia_semana', { ascending: true })
+      .order('hora_inicio', { ascending: true });
+
+    if (error) {
+      console.error('Error al obtener franjas:', error);
+      throw error;
+    }
+
+    // Agrupar franjas consecutivas
+    const bloquesPorDia = {};
+    
+    franjas.forEach(franja => {
+      if (!bloquesPorDia[franja.dia_semana]) {
+        bloquesPorDia[franja.dia_semana] = [];
+      }
+
+      const bloques = bloquesPorDia[franja.dia_semana];
+      const ultimoBloque = bloques[bloques.length - 1];
+
+      if (ultimoBloque && ultimoBloque.hora_fin === franja.hora_inicio) {
+        // Extender el bloque existente
+        ultimoBloque.hora_fin = franja.hora_fin;
+        ultimoBloque.franjas_ids.push(franja.id);
+      } else {
+        // Crear nuevo bloque
+        bloques.push({
+          hora_inicio: franja.hora_inicio,
+          hora_fin: franja.hora_fin,
+          franjas_ids: [franja.id]
+        });
+      }
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        bloques_disponibilidad: bloquesPorDia,
+        total_franjas: franjas.length
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error al obtener resumen:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al obtener resumen de disponibilidad',
       error: error.message
     });
   }

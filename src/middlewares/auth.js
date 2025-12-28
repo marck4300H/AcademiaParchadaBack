@@ -75,3 +75,6 @@ export const authorize = (...rolesPermitidos) => {
     next();
   };
 };
+// Alias para compatibilidad
+export const verificarToken = authenticate;
+export const verificarRol = authorize;
