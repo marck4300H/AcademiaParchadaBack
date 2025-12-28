@@ -1,76 +1,83 @@
 import express from 'express';
+import {
+  crearFranjaHoraria,
+  listarFranjasProfesor,
+  eliminarFranjaHoraria,
+  eliminarFranjasPorDia,
+  obtenerResumenDisponibilidad
+} from '../controllers/franjaHoraria.Controller.js';
+import {
+  validarCrearFranja,
+  validarListarFranjas,
+  validarEliminarFranja,
+  validarEliminarFranjasPorDia
+} from '../validators/franjaHoraria.Validator.js';
 import { authenticate, authorize } from '../middlewares/auth.js';
 import { handleValidationErrors } from '../middlewares/validationMiddleware.js';
-import {
-  createFranjaValidator,
-  updateFranjaValidator,
-  deleteFranjaValidator,
-  listFranjasByProfesorValidator
-} from '../validators/franjaHoraria.Validator.js';  // ✅ CORREGIDO: Validator con V mayúscula
-import {
-  createFranjaHoraria,
-  listFranjasByProfesor,
-  updateFranjaHoraria,
-  deleteFranjaHoraria
-} from '../controllers/franjaHoraria.Controller.js';
 
 const router = express.Router();
 
 /**
- * CU-013: Crear Franja Horaria
  * POST /api/franjas-horarias
- * Acceso: profesor, administrador
- * 
+ * Crear franja(s) horaria(s) para un profesor
+ * Divide automáticamente en bloques de 1 hora
  */
 router.post(
   '/',
   authenticate,
-  authorize('profesor', 'administrador'),
-  createFranjaValidator,
+  authorize('administrador', 'profesor'),
+  validarCrearFranja,
   handleValidationErrors,
-  createFranjaHoraria
+  crearFranjaHoraria
 );
 
 /**
- * CU-014: Listar Franjas Horarias de Profesor
- * GET /api/franjas-horarias/profesor/:profesorId
- * Acceso: profesor (solo propias), administrador
+ * GET /api/franjas-horarias/profesor/:profesor_id
+ * Listar todas las franjas de un profesor
+ * Query params: ?dia_semana=lunes (opcional)
  */
 router.get(
-  '/profesor/:profesorId',
-  authenticate,
-  authorize('profesor', 'administrador'),
-  listFranjasByProfesorValidator,
+  '/profesor/:profesor_id',
+  validarListarFranjas,
   handleValidationErrors,
-  listFranjasByProfesor
+  listarFranjasProfesor
 );
 
 /**
- * CU-015: Editar Franja Horaria
- * PUT /api/franjas-horarias/:id
- * Acceso: profesor (solo propias), administrador
+ * GET /api/franjas-horarias/profesor/:profesor_id/resumen
+ * Obtener resumen de disponibilidad (agrupa franjas consecutivas)
  */
-router.put(
-  '/:id',
+router.get(
+  '/profesor/:profesor_id/resumen',
   authenticate,
-  authorize('profesor', 'administrador'),
-  updateFranjaValidator,
-  handleValidationErrors,
-  updateFranjaHoraria
+  obtenerResumenDisponibilidad
 );
 
 /**
- * CU-016: Eliminar Franja Horaria
  * DELETE /api/franjas-horarias/:id
- * Acceso: profesor (solo propias), administrador
+ * Eliminar una franja horaria específica
  */
 router.delete(
   '/:id',
   authenticate,
-  authorize('profesor', 'administrador'),
-  deleteFranjaValidator,
+  authorize('administrador', 'profesor'),
+  validarEliminarFranja,
   handleValidationErrors,
-  deleteFranjaHoraria
+  eliminarFranjaHoraria
+);
+
+/**
+ * DELETE /api/franjas-horarias/profesor/:profesor_id/dia
+ * Eliminar todas las franjas de un día específico
+ * Body: { "dia_semana": "lunes" }
+ */
+router.delete(
+  '/profesor/:profesor_id/dia',
+  authenticate,
+  authorize('administrador', 'profesor'),
+  validarEliminarFranjasPorDia,
+  handleValidationErrors,
+  eliminarFranjasPorDia
 );
 
 export default router;
