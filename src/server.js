@@ -10,6 +10,7 @@ import clasePersonalizadaRoutes from './routes/clasePersonalizadaRoutes.js'
 import cursoRoutes from './routes/cursoRoutes.js'
 import compraRoutes from './routes/compra.routes.js'
 import paqueteHorasRoutes from './routes/paqueteHoras.routes.js'
+import pagosRoutes from './routes/pagos.routes.js'
 // Cargar variables de entorno
 dotenv.config();
 
@@ -107,7 +108,7 @@ app.use('/api/clases-personalizadas', clasePersonalizadaRoutes);
 app.use('/api/cursos', cursoRoutes);
 app.use('/api/compras', compraRoutes);
 app.use('/api/paquetes-horas', paqueteHorasRoutes);
-
+app.use('/api/pagos', pagosRoutes);
 
 // ============================================
 // MANEJO DE RUTAS NO ENCONTRADAS
