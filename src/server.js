@@ -12,6 +12,8 @@ import compraRoutes from './routes/compra.routes.js'
 import paqueteHorasRoutes from './routes/paqueteHoras.routes.js'
 import pagosRoutes from './routes/pagos.routes.js'
 import estudianteRoutes from './routes/estudiante.routes.js';
+import profesorDashboardRoutes from './routes/profesorDashboard.routes.js';
+
 
 // Cargar variables de entorno
 dotenv.config();
@@ -112,6 +114,7 @@ app.use('/api/compras', compraRoutes);
 app.use('/api/paquetes-horas', paqueteHorasRoutes);
 app.use('/api/pagos', pagosRoutes);
 app.use('/api/estudiante', estudianteRoutes);
+app.use('/api/profesor', profesorDashboardRoutes);
 
 
 // ============================================
