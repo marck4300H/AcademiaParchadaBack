@@ -13,6 +13,8 @@ import paqueteHorasRoutes from './routes/paqueteHoras.routes.js'
 import pagosRoutes from './routes/pagos.routes.js'
 import estudianteRoutes from './routes/estudiante.routes.js';
 import profesorDashboardRoutes from './routes/profesorDashboard.routes.js';
+import adminRoutes from './routes/admin.routes.js';
+
 
 
 // Cargar variables de entorno
@@ -116,6 +118,8 @@ app.use('/api/paquetes-horas', paqueteHorasRoutes);
 app.use('/api/pagos', pagosRoutes);
 app.use('/api/estudiante', estudianteRoutes);
 app.use('/api/profesor', profesorDashboardRoutes);
+app.use('/api/admin', adminRoutes);
+
 
 
 // ============================================
