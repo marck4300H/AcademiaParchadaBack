@@ -47,8 +47,15 @@ export const sendWelcomeEmail = async ({ to, nombre }) => {
   }
 };
 
-// CU-052 (compra exitosa) - versión mínima alineada a tu mensaje
-export const sendCompraExitosaEmails = async ({ compra, estudianteEmail, profesorEmail, profesorNombre, tipo, detalle }) => {
+// CU-052 (compra exitosa)
+export const sendCompraExitosaEmails = async ({
+  compra,
+  estudianteEmail,
+  profesorEmail,
+  profesorNombre,
+  tipo,
+  detalle
+}) => {
   try {
     const adminEmail = await getAdminEmail();
 
@@ -85,6 +92,7 @@ export const sendCompraExitosaEmails = async ({ compra, estudianteEmail, profeso
       }));
     }
 
+    // Único correo al admin: en compra (OK)
     if (adminEmail) {
       tasks.push(resend.emails.send({
         from: EMAIL_FROM,
@@ -94,7 +102,7 @@ export const sendCompraExitosaEmails = async ({ compra, estudianteEmail, profeso
       }));
     }
 
-    // Solo enviar al profesor si existe (normalmente solo para clase personalizada)
+    // Notificación al profesor en compra/asignación (OK)
     if (profesorEmail) {
       tasks.push(resend.emails.send({
         from: EMAIL_FROM,
@@ -110,63 +118,30 @@ export const sendCompraExitosaEmails = async ({ compra, estudianteEmail, profeso
   }
 };
 
-// CU-054 (link Meet)
-export const sendMeetLinkEmails = async ({ sesion, estudianteEmail, profesorEmail }) => {
+// CU-054 (link Meet) => SOLO estudiante
+export const sendMeetLinkEmails = async ({ sesion, estudianteEmail }) => {
   try {
-    const adminEmail = await getAdminEmail();
     const when = formatDateTimeCO(sesion?.fecha_hora);
     const link = sesion?.link_meet;
 
-    const tasks = [];
+    if (!estudianteEmail) return;
 
-    if (estudianteEmail) {
-      tasks.push(resend.emails.send({
-        from: EMAIL_FROM,
-        to: estudianteEmail,
-        subject: 'Tu clase ya tiene link de Meet',
-        html: `
-          <h2>Link de clase listo</h2>
-          <p><strong>Fecha/Hora:</strong> ${when}</p>
-          <p><strong>Link Meet:</strong> <a href="${link}">${link}</a></p>
-        `
-      }));
-    }
-
-    if (adminEmail) {
-      tasks.push(resend.emails.send({
-        from: EMAIL_FROM,
-        to: adminEmail,
-        subject: `Link Meet asignado - Sesión #${sesion?.id || ''}`,
-        html: `
-          <h2>Link Meet asignado</h2>
-          <p><strong>Sesión:</strong> ${sesion?.id}</p>
-          <p><strong>Fecha/Hora:</strong> ${when}</p>
-          <p><strong>Link:</strong> <a href="${link}">${link}</a></p>
-        `
-      }));
-    }
-
-    // opcional: copia al profesor
-    if (profesorEmail) {
-      tasks.push(resend.emails.send({
-        from: EMAIL_FROM,
-        to: profesorEmail,
-        subject: 'Link Meet registrado',
-        html: `
-          <h2>Link Meet registrado</h2>
-          <p><strong>Fecha/Hora:</strong> ${when}</p>
-          <p><strong>Link:</strong> <a href="${link}">${link}</a></p>
-        `
-      }));
-    }
-
-    await Promise.allSettled(tasks);
+    await resend.emails.send({
+      from: EMAIL_FROM,
+      to: estudianteEmail,
+      subject: 'Tu clase ya tiene link de Meet',
+      html: `
+        <h2>Link de clase listo</h2>
+        <p><strong>Fecha/Hora:</strong> ${when}</p>
+        <p><strong>Link Meet:</strong> <a href="${link}">${link}</a></p>
+      `
+    });
   } catch (err) {
     console.error('Error sendMeetLinkEmails:', err);
   }
 };
 
-// CU-055 (queda listo para engancharlo cuando creemos profesor)
+// CU-055 (credenciales profesor)
 export const sendCredencialesProfesorEmail = async ({ to, nombre, email, passwordTemp }) => {
   try {
     await resend.emails.send({

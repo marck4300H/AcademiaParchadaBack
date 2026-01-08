@@ -83,6 +83,7 @@ export const asignarLinkMeet = async (req, res) => {
       });
     }
 
+    // Traer sesión y emails (para permisos y notificación)
     const { data: sesion, error: sesionError } = await supabase
       .from('sesion_clase')
       .select(`
@@ -100,12 +101,6 @@ export const asignarLinkMeet = async (req, res) => {
             apellido,
             email
           )
-        ),
-        profesor:profesor_id (
-          id,
-          nombre,
-          apellido,
-          email
         )
       `)
       .eq('id', sesionId)
@@ -115,6 +110,7 @@ export const asignarLinkMeet = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Sesión no encontrada' });
     }
 
+    // Permisos: profesor solo puede modificar sus sesiones
     if (req.user.rol === 'profesor' && sesion.profesor_id !== req.user.id) {
       return res.status(403).json({ success: false, message: 'No tienes permiso para modificar esta sesión' });
     }
@@ -126,6 +122,7 @@ export const asignarLinkMeet = async (req, res) => {
       });
     }
 
+    // Actualizar link
     const { data: updated, error: updateError } = await supabase
       .from('sesion_clase')
       .update({ link_meet })
@@ -142,13 +139,12 @@ export const asignarLinkMeet = async (req, res) => {
       });
     }
 
+    // Email SOLO al estudiante (según flujo)
     const estudianteEmail = sesion?.compra?.estudiante?.email || null;
-    const profesorEmail = sesion?.profesor?.email || null;
 
     await sendMeetLinkEmails({
       sesion: updated,
-      estudianteEmail,
-      profesorEmail
+      estudianteEmail
     });
 
     return res.status(200).json({
