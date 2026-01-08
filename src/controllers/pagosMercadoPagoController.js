@@ -1,21 +1,20 @@
+// src/controllers/pagosMercadoPagoController.js
 import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 import { supabase } from '../config/supabase.js';
 import { mpPreference, mpPayment, mpMerchantOrder } from '../config/mercadopago.js';
+import { asignarProfesorOptimo } from '../utils/asignarProfesor.js';
+import { sendCompraExitosaEmails } from '../services/emailService.js';
 
 dotenv.config();
 
 /**
- * Crea (o reutiliza) una compra en estado "pendiente" y genera una preferencia de MercadoPago Checkout Pro.
+ * POST /api/pagos/mercadopago/checkout
  *
- * Endpoint: POST /api/pagos/mercadopago/checkout
- *
- * Body soportado:
- * - Flujo autenticado (requiere token si lo deseas): { tipo_compra, curso_id | clase_personalizada_id | (paquete) clase_personalizada_id + cantidad_horas, ... }
- * - Flujo sin login: incluye "estudiante" para crear usuario automáticamente.
- *
- * Nota: Para simplificar el arranque de FASE 9, este endpoint maneja el inicio del pago.
- * Luego, el webhook confirma y actualiza compra.estado_pago.
+ * NUEVO (para clases): aceptar también
+ * - fecha_hora (ISO)
+ * - descripcion_estudiante (string)
+ * - documento_url (string opcional)
  */
 export const crearCheckoutMercadoPago = async (req, res) => {
   try {
@@ -24,14 +23,18 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       curso_id,
       clase_personalizada_id,
       cantidad_horas,
-      estudiante
+      estudiante,
+      // NUEVO para clase_personalizada:
+      fecha_hora,
+      descripcion_estudiante,
+      documento_url
     } = req.body;
 
     if (!tipo_compra) {
       return res.status(400).json({ success: false, message: 'tipo_compra es requerido' });
     }
 
-    // 1) Resolver estudiante_id (token o creación automática)
+    // 1) Resolver estudiante_id
     let estudiante_id = req.user?.id || null;
 
     if (!estudiante_id) {
@@ -77,7 +80,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       estudiante_id = nuevoEst.id;
     }
 
-    // 2) Calcular monto_total según tipo_compra
+    // 2) Calcular monto_total y metadata
     let titulo = '';
     let monto_total = 0;
     let metadata = { tipo_compra };
@@ -101,6 +104,13 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       if (!clase_personalizada_id) {
         return res.status(400).json({ success: false, message: 'clase_personalizada_id es requerido' });
       }
+      if (!fecha_hora) {
+        return res.status(400).json({ success: false, message: 'fecha_hora es requerida para clase_personalizada' });
+      }
+      const dt = new Date(fecha_hora);
+      if (Number.isNaN(dt.getTime())) {
+        return res.status(400).json({ success: false, message: 'fecha_hora inválida (ISO)' });
+      }
 
       const { data: clase, error } = await supabase
         .from('clase_personalizada')
@@ -112,7 +122,14 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
       titulo = `Clase personalizada`;
       monto_total = Number(clase.precio);
-      metadata = { ...metadata, clase_personalizada_id: clase.id };
+
+      metadata = {
+        ...metadata,
+        clase_personalizada_id: clase.id,
+        fecha_hora: dt.toISOString(),
+        descripcion_estudiante: descripcion_estudiante || null,
+        documento_url: documento_url || null
+      };
 
     } else if (tipo_compra === 'paquete_horas') {
       if (!clase_personalizada_id) {
@@ -157,7 +174,6 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       moneda: 'COP'
     };
 
-    // Campos específicos para paquete
     if (tipo_compra === 'paquete_horas') {
       compraInsert.horas_totales = Number(cantidad_horas);
       compraInsert.horas_usadas = 0;
@@ -172,46 +188,30 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
     if (errCompra) throw errCompra;
 
-    // 4) Crear preferencia de MercadoPago
+    // 4) Preferencia MP
     const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
     const BACKEND_PUBLIC_URL = process.env.BACKEND_PUBLIC_URL || `http://localhost:${process.env.PORT || 5000}`;
-
     const notification_url = `${BACKEND_PUBLIC_URL}/api/pagos/mercadopago/webhook`;
 
     const preferenceBody = {
-      items: [
-        {
-          title: titulo,
-          quantity: 1,
-          currency_id: 'COP',
-          unit_price: Number(monto_total)
-        }
-      ],
-      external_reference: compra.id, // clave: el webhook la trae y con eso cerramos la compra
-      metadata: {
-        ...metadata,
-        compra_id: compra.id
-      },
+      items: [{ title: titulo, quantity: 1, currency_id: 'COP', unit_price: Number(monto_total) }],
+      external_reference: compra.id,
+      metadata: { ...metadata, compra_id: compra.id },
       back_urls: {
         success: `${FRONTEND_URL}/pago/exitoso?compra_id=${compra.id}`,
         pending: `${FRONTEND_URL}/pago/pendiente?compra_id=${compra.id}`,
         failure: `${FRONTEND_URL}/pago/fallido?compra_id=${compra.id}`
       },
-      //auto_return: 'approved',
       notification_url
     };
 
     const mpResp = await mpPreference.create({ body: preferenceBody });
 
-    // 5) Guardar preference_id en compra
     const preference_id = mpResp?.id || null;
 
     const { error: errUpd } = await supabase
       .from('compra')
-      .update({
-        mp_preference_id: preference_id,
-        mp_raw: mpResp
-      })
+      .update({ mp_preference_id: preference_id, mp_raw: mpResp })
       .eq('id', compra.id);
 
     if (errUpd) throw errUpd;
@@ -237,22 +237,10 @@ export const crearCheckoutMercadoPago = async (req, res) => {
   }
 };
 
-/**
- * Webhook MercadoPago (IPN/Notifications).
- *
- * Endpoint: POST /api/pagos/mercadopago/webhook
- *
- * MercadoPago puede enviar:
- * - Query: ?topic=payment&id=123
- * - Query (a veces): ?topic=payment&data.id=123
- * - Body: { type: "payment", data: { id: "123" } }
- * - Body (a veces): { topic: "payment|merchant_order", resource: "123" o "https://.../merchant_orders/123" }
- */
 export const webhookMercadoPago = async (req, res) => {
   try {
     const topic = req.query.topic || req.body?.type || req.body?.topic;
 
-    // --- FIX: extracción robusta del ID (evita "Invalid Id") ---
     let id =
       req.query.id ||
       req.query['data.id'] ||
@@ -260,18 +248,14 @@ export const webhookMercadoPago = async (req, res) => {
       req.body?.id ||
       req.body?.resource;
 
-    // Si viene como URL en resource (merchant_order), extraer el último segmento
     if (typeof id === 'string' && id.startsWith('http')) {
       id = id.split('/').filter(Boolean).pop();
     }
-    // --- FIN FIX ---
 
-    // Responder rápido para que MP no reintente por timeout
     if (!topic || !id) {
       return res.status(200).send('OK');
     }
 
-    // Idempotencia (event_id = topic:id)
     const eventId = `${topic}:${id}`;
 
     const { data: yaProcesado } = await supabase
@@ -294,13 +278,12 @@ export const webhookMercadoPago = async (req, res) => {
         payload: { query: req.query, body: req.body, headers: req.headers }
       }]);
 
-    // Procesamiento principal
     if (topic === 'payment' || topic === 'payment.updated') {
       const paymentId = String(id);
       const payment = await mpPayment.get({ id: paymentId });
 
       const external_reference = payment?.external_reference; // compra.id
-      const status = payment?.status; // approved, pending, rejected, cancelled
+      const status = payment?.status;
       const status_detail = payment?.status_detail;
       const merchant_order_id = payment?.order?.id ? String(payment.order.id) : null;
 
@@ -313,7 +296,7 @@ export const webhookMercadoPago = async (req, res) => {
           : (status === 'rejected' || status === 'cancelled') ? 'fallido'
             : 'pendiente';
 
-      // Update compra
+      // Actualizar compra
       await supabase
         .from('compra')
         .update({
@@ -326,43 +309,203 @@ export const webhookMercadoPago = async (req, res) => {
         })
         .eq('id', external_reference);
 
-      // Activación post-pago (mínima e idempotente)
-      if (nuevoEstado === 'completado') {
-        const { data: compra } = await supabase
-          .from('compra')
-          .select('id, tipo_compra, estudiante_id, curso_id')
-          .eq('id', external_reference)
+      if (nuevoEstado !== 'completado') {
+        return res.status(200).send('OK');
+      }
+
+      // === POST-PAGO (CU-052 / CU-053) ===
+
+      // Traer compra + estudiante + curso/clase
+      const { data: compra } = await supabase
+        .from('compra')
+        .select(`
+          id,
+          tipo_compra,
+          estudiante_id,
+          curso_id,
+          clase_personalizada_id,
+          monto_total,
+          mp_raw
+        `)
+        .eq('id', external_reference)
+        .single();
+
+      if (!compra?.id) return res.status(200).send('OK');
+
+      const { data: estudiante } = await supabase
+        .from('usuario')
+        .select('id,nombre,apellido,email')
+        .eq('id', compra.estudiante_id)
+        .single();
+
+      // Si es curso: inscripción (ya lo hacías) + email compra exitosa
+      if (compra.tipo_compra === 'curso' && compra.curso_id) {
+        const { data: inscExist } = await supabase
+          .from('inscripcion_curso')
+          .select('id')
+          .eq('estudiante_id', compra.estudiante_id)
+          .eq('curso_id', compra.curso_id)
+          .maybeSingle();
+
+        if (!inscExist?.id) {
+          await supabase.from('inscripcion_curso').insert([{
+            estudiante_id: compra.estudiante_id,
+            curso_id: compra.curso_id,
+            fecha_inscripcion: new Date().toISOString()
+          }]);
+        }
+
+        const { data: curso } = await supabase
+          .from('curso')
+          .select(`
+            id,nombre,
+            profesor:profesor_id (id,nombre,apellido,email)
+          `)
+          .eq('id', compra.curso_id)
           .single();
 
-        if (compra?.tipo_compra === 'curso' && compra?.curso_id) {
-          // Crear inscripción si no existe
-          const { data: inscExist } = await supabase
-            .from('inscripcion_curso')
-            .select('id')
-            .eq('estudiante_id', compra.estudiante_id)
-            .eq('curso_id', compra.curso_id)
-            .maybeSingle();
+        await sendCompraExitosaEmails({
+          compra,
+          estudianteEmail: estudiante?.email,
+          profesorEmail: curso?.profesor?.email || null,
+          profesorNombre: curso?.profesor ? `${curso.profesor.nombre} ${curso.profesor.apellido}` : null,
+          tipo: 'curso',
+          detalle: `Curso: ${curso?.nombre || ''} | Monto: ${compra?.monto_total || ''}`
+        });
 
-          if (!inscExist?.id) {
-            await supabase.from('inscripcion_curso').insert([{
-              estudiante_id: compra.estudiante_id,
-              curso_id: compra.curso_id,
-              fecha_inscripcion: new Date().toISOString()
-            }]);
+        return res.status(200).send('OK');
+      }
+
+      // Si es clase_personalizada: crear sesion_clase + notificar
+      if (compra.tipo_compra === 'clase_personalizada' && compra.clase_personalizada_id) {
+        // idempotencia: si ya existe sesion_clase para esta compra, no crear otra
+        const { data: sesionExist } = await supabase
+          .from('sesion_clase')
+          .select('id')
+          .eq('compra_id', compra.id)
+          .maybeSingle();
+
+        let profesorEmail = null;
+        let profesorNombre = null;
+        let sesionCreada = null;
+
+        if (!sesionExist?.id) {
+          const { data: clase } = await supabase
+            .from('clase_personalizada')
+            .select(`
+              id,
+              duracion_horas,
+              asignatura_id,
+              asignatura:asignatura_id (id,nombre)
+            `)
+            .eq('id', compra.clase_personalizada_id)
+            .single();
+
+          // Recuperar datos guardados en metadata (desde checkout)
+          const meta = compra?.mp_raw?.metadata || {};
+          const fechaHoraIso = meta?.fecha_hora;
+          const descripcionEst = meta?.descripcion_estudiante || null;
+          const documentoUrl = meta?.documento_url || null;
+
+          if (!fechaHoraIso) {
+            console.error('Falta metadata.fecha_hora en mp_raw para compra', compra.id);
+            return res.status(200).send('OK');
           }
+
+          const asignacion = await asignarProfesorOptimo(
+            clase.asignatura_id,
+            new Date(fechaHoraIso),
+            clase.duracion_horas
+          );
+
+          if (!asignacion) {
+            // Si no hay profesor: dejar compra completada pero sin sesión; opcional: marcar algo extra
+            console.error('No hay profesor disponible para compra', compra.id);
+            await sendCompraExitosaEmails({
+              compra,
+              estudianteEmail: estudiante?.email,
+              profesorEmail: null,
+              profesorNombre: null,
+              tipo: 'clase_personalizada',
+              detalle: `Asignatura: ${clase?.asignatura?.nombre || ''} | Monto: ${compra?.monto_total || ''}`
+            });
+            return res.status(200).send('OK');
+          }
+
+          const profesorAsignado = asignacion.profesor;
+          const franjasUtilizadas = asignacion.franjasUtilizadas;
+
+          profesorEmail = profesorAsignado?.email || null;
+          profesorNombre = profesorAsignado ? `${profesorAsignado.nombre} ${profesorAsignado.apellido}` : null;
+
+          const { data: sesion, error: sesionError } = await supabase
+            .from('sesion_clase')
+            .insert([{
+              compra_id: compra.id,
+              profesor_id: profesorAsignado.id,
+              descripcion_estudiante: descripcionEst,
+              documento_url: documentoUrl,
+              fecha_hora: new Date(fechaHoraIso).toISOString(),
+              link_meet: null,
+              estado: 'programada',
+              franja_horaria_ids: franjasUtilizadas
+            }])
+            .select()
+            .single();
+
+          if (sesionError) {
+            console.error('Error creando sesion_clase post-pago:', sesionError);
+          } else {
+            sesionCreada = sesion;
+          }
+        } else {
+          // si ya existía sesión, traer profesor para emails
+          const { data: sesion } = await supabase
+            .from('sesion_clase')
+            .select(`
+              id,
+              fecha_hora,
+              profesor:profesor_id (nombre,apellido,email)
+            `)
+            .eq('compra_id', compra.id)
+            .single();
+
+          sesionCreada = sesion;
+          profesorEmail = sesion?.profesor?.email || null;
+          profesorNombre = sesion?.profesor ? `${sesion.profesor.nombre} ${sesion.profesor.apellido}` : null;
         }
+
+        await sendCompraExitosaEmails({
+          compra,
+          estudianteEmail: estudiante?.email,
+          profesorEmail,
+          profesorNombre,
+          tipo: 'clase_personalizada',
+          detalle: `Sesión: ${sesionCreada?.id || ''} | Fecha/Hora: ${sesionCreada?.fecha_hora || ''} | Monto: ${compra?.monto_total || ''}`
+        });
+
+        return res.status(200).send('OK');
+      }
+
+      // paquete_horas: solo email compra exitosa (no crea sesión)
+      if (compra.tipo_compra === 'paquete_horas') {
+        await sendCompraExitosaEmails({
+          compra,
+          estudianteEmail: estudiante?.email,
+          profesorEmail: null,
+          profesorNombre: null,
+          tipo: 'paquete_horas',
+          detalle: `Monto: ${compra?.monto_total || ''}`
+        });
+        return res.status(200).send('OK');
       }
 
       return res.status(200).send('OK');
     }
 
     if (topic === 'merchant_order') {
-      // Opcional: se puede usar para reconciliar órdenes
       const orderId = String(id);
       await mpMerchantOrder.get({ id: orderId });
-
-      // Si trae external_reference, también podrías actualizar estado
-      // (pero dejamos payment como fuente de verdad)
       return res.status(200).send('OK');
     }
 
@@ -370,15 +513,10 @@ export const webhookMercadoPago = async (req, res) => {
 
   } catch (error) {
     console.error('❌ Error webhook MercadoPago:', error);
-    // Aun así devolver 200 para evitar reintentos agresivos mientras debuggeas
     return res.status(200).send('OK');
   }
 };
 
-/**
- * Consultar estado de una compra (útil para frontend después del return_url).
- * Endpoint: GET /api/pagos/mercadopago/estado/:compra_id
- */
 export const obtenerEstadoCompra = async (req, res) => {
   try {
     const { compra_id } = req.params;

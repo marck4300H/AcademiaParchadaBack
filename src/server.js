@@ -1,3 +1,4 @@
+// src/server.js
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -14,8 +15,7 @@ import pagosRoutes from './routes/pagos.routes.js'
 import estudianteRoutes from './routes/estudiante.routes.js';
 import profesorDashboardRoutes from './routes/profesorDashboard.routes.js';
 import adminRoutes from './routes/admin.routes.js';
-
-
+import sesionesRoutes from './routes/sesiones.routes.js';
 
 // Cargar variables de entorno
 dotenv.config();
@@ -53,14 +53,11 @@ const corsOptions = {
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   exposedHeaders: ['Content-Length', 'X-Request-Id'],
-  maxAge: 86400, // 24 horas
-  optionsSuccessStatus: 200 // Para navegadores legacy
+  maxAge: 86400,
+  optionsSuccessStatus: 200
 };
 
-// Aplicar CORS ANTES de cualquier otra cosa
 app.use(cors(corsOptions));
-
-// Manejar preflight requests explícitamente
 app.options('*', cors(corsOptions));
 
 // ============================================
@@ -119,8 +116,7 @@ app.use('/api/pagos', pagosRoutes);
 app.use('/api/estudiante', estudianteRoutes);
 app.use('/api/profesor', profesorDashboardRoutes);
 app.use('/api/admin', adminRoutes);
-
-
+app.use('/api/sesiones', sesionesRoutes);
 
 // ============================================
 // MANEJO DE RUTAS NO ENCONTRADAS
@@ -136,7 +132,6 @@ app.use((req, res) => {
 // MANEJO DE ERRORES GLOBAL
 // ============================================
 app.use((err, req, res, next) => {
-  // Error de CORS
   if (err.message === 'No permitido por CORS') {
     return res.status(403).json({
       success: false,
