@@ -1,20 +1,20 @@
+// src/controllers/authController.js
 import bcrypt from 'bcryptjs';
 import { supabase } from '../config/supabase.js';
 import { generateToken } from '../utils/jwt.js';
-import { Resend } from 'resend';
-
-const resend = new Resend(process.env.RESEND_API_KEY);
+import { sendWelcomeEmail } from '../services/emailService.js';
 
 /**
  * CU-001: Registro de Usuario (Estudiante)
  * POST /api/auth/register
+ * + CU-051: Email de bienvenida
  */
 export const register = async (req, res) => {
   try {
     const { email, password, nombre, apellido, telefono } = req.body;
 
     // 1. Verificar si el usuario ya existe
-    const { data: existingUser, error: checkError } = await supabase
+    const { data: existingUser } = await supabase
       .from('usuario')
       .select('id')
       .eq('email', email)
@@ -63,26 +63,8 @@ export const register = async (req, res) => {
       rol: newUser.rol
     });
 
-    // 5. Enviar email de bienvenida (CU-051)
-    try {
-      await resend.emails.send({
-        from: process.env.EMAIL_FROM || 'onboarding@resend.dev',
-        to: email,
-        subject: '¡Bienvenido a Academia Parchada!',
-        html: `
-          <h1>¡Hola ${nombre}!</h1>
-          <p>Bienvenido a <strong>Academia Parchada</strong>, tu plataforma de aprendizaje personalizado.</p>
-          <p>Tu cuenta ha sido creada exitosamente. Ya puedes acceder a todos nuestros cursos y clases personalizadas.</p>
-          <p><strong>Email:</strong> ${email}</p>
-          <p>Si tienes alguna duda, no dudes en contactarnos.</p>
-          <br>
-          <p>¡Éxitos en tu aprendizaje!</p>
-        `
-      });
-    } catch (emailError) {
-      console.error('Error al enviar email de bienvenida:', emailError);
-      // No fallar el registro si el email falla
-    }
+    // 5. Email bienvenida (no bloquea)
+    await sendWelcomeEmail({ to: email, nombre });
 
     // 6. Respuesta exitosa
     res.status(201).json({
@@ -119,7 +101,6 @@ export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // 1. Buscar usuario por email
     const { data: user, error: findError } = await supabase
       .from('usuario')
       .select('*')
@@ -133,7 +114,6 @@ export const login = async (req, res) => {
       });
     }
 
-    // 2. Verificar contraseña
     const isPasswordValid = await bcrypt.compare(password, user.password_hash);
 
     if (!isPasswordValid) {
@@ -143,14 +123,12 @@ export const login = async (req, res) => {
       });
     }
 
-    // 3. Generar JWT
     const token = generateToken({
       id: user.id,
       email: user.email,
       rol: user.rol
     });
 
-    // 4. Respuesta exitosa
     res.json({
       success: true,
       message: 'Inicio de sesión exitoso',
@@ -180,13 +158,9 @@ export const login = async (req, res) => {
 /**
  * CU-004: Cierre de Sesión
  * POST /api/auth/logout
- * Nota: Con JWT, el logout es manejado en el frontend eliminando el token
  */
 export const logout = async (req, res) => {
   try {
-    // En una implementación con JWT, el logout es principalmente del lado del cliente
-    // Aquí podríamos implementar una blacklist de tokens si es necesario
-    
     res.json({
       success: true,
       message: 'Sesión cerrada exitosamente'
@@ -202,12 +176,10 @@ export const logout = async (req, res) => {
 };
 
 /**
- * Obtener usuario actual (útil para verificar sesión)
  * GET /api/auth/me
  */
 export const getMe = async (req, res) => {
   try {
-    // req.user viene del middleware de autenticación
     const { data: user, error } = await supabase
       .from('usuario')
       .select('id, email, nombre, apellido, telefono, rol, created_at')

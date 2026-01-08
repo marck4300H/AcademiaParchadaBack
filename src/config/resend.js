@@ -7,4 +7,4 @@ dotenv.config();
 export const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Email por defecto del remitente
-export const EMAIL_FROM = process.env.EMAIL_FROM || 'noreply@tudominio.com';
+export const EMAIL_FROM = process.env.EMAIL_FROM || 'noreply@parcheacademico.com';

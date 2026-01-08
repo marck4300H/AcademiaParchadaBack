@@ -68,26 +68,23 @@ const optionalAuth = (req, res, next) => {
  * CU-029: Comprar curso (con o sin registro previo)
  * Acepta: usuario autenticado O datos de nuevo estudiante
  */
-router.post(
-  '/curso',
-  validarComprarCurso,
-  handleValidationErrors,
-  optionalAuth,
-  comprarCurso
-);
-
+router.post('/curso', (req, res) => {
+  return res.status(410).json({
+    success: false,
+    message: 'Endpoint deshabilitado. Usa /api/pagos/mercadopago/checkout'
+  });
+});
 /**
  * POST /api/compras/clase-personalizada
  * CU-030: Comprar clase personalizada (con o sin registro previo)
  * CU-031: Asignación automática de profesor
  */
-router.post(
-  '/clase-personalizada',
-  validarComprarClasePersonalizada,
-  handleValidationErrors,
-  optionalAuth,
-  comprarClasePersonalizada
-);
+router.post('/clase-personalizada', (req, res) => {
+  return res.status(410).json({
+    success: false,
+    message: 'Endpoint deshabilitado. Usa /api/pagos/mercadopago/checkout'
+  });
+});
 
 // ============================================
 // RUTAS PROTEGIDAS - ESTUDIANTE
