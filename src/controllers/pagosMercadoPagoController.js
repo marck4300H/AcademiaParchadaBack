@@ -389,10 +389,11 @@ export const webhookMercadoPago = async (req, res) => {
       if (compra.tipo_compra === 'clase_personalizada' && compra.clase_personalizada_id) {
         const { data: sesionExist } = await supabase
           .from('sesion_clase')
-          .select('id')
+          .select('id, profesor_id')
           .eq('compra_id', compra.id)
           .maybeSingle();
 
+        let profesorId = sesionExist?.profesor_id || null;
         let profesorEmail = null;
         let profesorNombre = null;
         let sesionCreada = null;
@@ -443,14 +444,19 @@ export const webhookMercadoPago = async (req, res) => {
           const profesorAsignado = asignacion.profesor;
           const franjasUtilizadas = asignacion.franjasUtilizadas;
 
+          profesorId = profesorAsignado?.id || null;
+
+          // OJO: acá muchas veces profesorAsignado NO trae email (depende de asignarProfesorOptimo)
           profesorEmail = profesorAsignado?.email || null;
-          profesorNombre = profesorAsignado ? `${profesorAsignado.nombre} ${profesorAsignado.apellido}` : null;
+          profesorNombre = profesorAsignado?.nombre && profesorAsignado?.apellido
+            ? `${profesorAsignado.nombre} ${profesorAsignado.apellido}`
+            : null;
 
           const { data: sesion, error: sesionError } = await supabase
             .from('sesion_clase')
             .insert([{
               compra_id: compra.id,
-              profesor_id: profesorAsignado.id,
+              profesor_id: profesorId,
               descripcion_estudiante: descripcionEst,
               documento_url: documentoUrl,
               fecha_hora: new Date(fechaHoraIso).toISOString(),
@@ -467,20 +473,46 @@ export const webhookMercadoPago = async (req, res) => {
             sesionCreada = sesion;
           }
         } else {
+          // Si ya existía sesión, trae datos del profesor por relación (si está bien definida)
           const { data: sesion } = await supabase
             .from('sesion_clase')
             .select(`
               id,
               fecha_hora,
-              profesor:profesor_id (nombre,apellido,email)
+              profesor_id,
+              profesor:profesor_id (id,nombre,apellido,email)
             `)
             .eq('compra_id', compra.id)
             .single();
 
           sesionCreada = sesion;
+          profesorId = sesion?.profesor_id || profesorId;
           profesorEmail = sesion?.profesor?.email || null;
-          profesorNombre = sesion?.profesor ? `${sesion.profesor.nombre} ${sesion.profesor.apellido}` : null;
+          profesorNombre = sesion?.profesor?.nombre && sesion?.profesor?.apellido
+            ? `${sesion.profesor.nombre} ${sesion.profesor.apellido}`
+            : null;
         }
+
+        // ===== BLINDAJE: si hay profesorId pero NO email, lo consultamos directo en usuario =====
+        if (profesorId && !profesorEmail) {
+          const { data: profDb, error: profErr } = await supabase
+            .from('usuario')
+            .select('email,nombre,apellido')
+            .eq('id', profesorId)
+            .single();
+
+          if (profErr) {
+            console.error('[EMAIL][CLASE] Error buscando email de profesor:', profErr);
+          } else {
+            profesorEmail = profDb?.email || null;
+            if (!profesorNombre && profDb?.nombre && profDb?.apellido) {
+              profesorNombre = `${profDb.nombre} ${profDb.apellido}`;
+            }
+          }
+        }
+
+        console.log('[EMAIL][CLASE] profesorId:', profesorId);
+        console.log('[EMAIL][CLASE] profesorEmail:', profesorEmail);
 
         await sendCompraExitosaEmails({
           compra,
@@ -493,6 +525,7 @@ export const webhookMercadoPago = async (req, res) => {
 
         return res.status(200).send('OK');
       }
+
 
       // ==========================
       // ========== PAQUETE HORAS ==
