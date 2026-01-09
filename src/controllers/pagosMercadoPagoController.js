@@ -446,7 +446,7 @@ export const webhookMercadoPago = async (req, res) => {
 
           profesorId = profesorAsignado?.id || null;
 
-          // OJO: acá muchas veces profesorAsignado NO trae email (depende de asignarProfesorOptimo)
+          // Puede venir sin email (depende del algoritmo), por eso luego lo resolvemos por BD sí o sí
           profesorEmail = profesorAsignado?.email || null;
           profesorNombre = profesorAsignado?.nombre && profesorAsignado?.apellido
             ? `${profesorAsignado.nombre} ${profesorAsignado.apellido}`
@@ -473,7 +473,7 @@ export const webhookMercadoPago = async (req, res) => {
             sesionCreada = sesion;
           }
         } else {
-          // Si ya existía sesión, trae datos del profesor por relación (si está bien definida)
+          // Si ya existía sesión
           const { data: sesion } = await supabase
             .from('sesion_clase')
             .select(`
@@ -493,8 +493,8 @@ export const webhookMercadoPago = async (req, res) => {
             : null;
         }
 
-        // ===== BLINDAJE: si hay profesorId pero NO email, lo consultamos directo en usuario =====
-        if (profesorId && !profesorEmail) {
+        // ===== CORRECCIÓN: Resolver SIEMPRE el email del profesor por BD =====
+        if (profesorId) {
           const { data: profDb, error: profErr } = await supabase
             .from('usuario')
             .select('email,nombre,apellido')
@@ -504,7 +504,7 @@ export const webhookMercadoPago = async (req, res) => {
           if (profErr) {
             console.error('[EMAIL][CLASE] Error buscando email de profesor:', profErr);
           } else {
-            profesorEmail = profDb?.email || null;
+            profesorEmail = profDb?.email || profesorEmail || null;
             if (!profesorNombre && profDb?.nombre && profDb?.apellido) {
               profesorNombre = `${profDb.nombre} ${profDb.apellido}`;
             }
@@ -525,7 +525,6 @@ export const webhookMercadoPago = async (req, res) => {
 
         return res.status(200).send('OK');
       }
-
 
       // ==========================
       // ========== PAQUETE HORAS ==
@@ -559,6 +558,7 @@ export const webhookMercadoPago = async (req, res) => {
     return res.status(200).send('OK');
   }
 };
+
 
 
 export const obtenerEstadoCompra = async (req, res) => {
