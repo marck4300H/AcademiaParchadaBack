@@ -37,8 +37,8 @@ export const sendWelcomeEmail = async ({ to, nombre }) => {
       to,
       subject: '¡Bienvenido a Academia Parchada!',
       html: `
-        <h1>¡Hola ${nombre}!</h1>
-        <p>Bienvenido a <strong>Academia Parchada</strong>.</p>
+        <p>Hola ${nombre || ''},</p>
+        <p>Bienvenido a <b>Academia Parchada</b>.</p>
         <p>Tu cuenta fue creada exitosamente.</p>
       `
     });
@@ -47,7 +47,21 @@ export const sendWelcomeEmail = async ({ to, nombre }) => {
   }
 };
 
-// CU-052 (compra exitosa)
+// Helpers de contenido
+const buildEmailCompra = ({ tipo, detalle }) => {
+  const tipoLabel =
+    tipo === 'curso' ? 'Curso'
+      : tipo === 'clase_personalizada' ? 'Clase personalizada'
+        : tipo === 'paquete_horas' ? 'Paquete de horas'
+          : (tipo || 'Compra');
+
+  return {
+    tipoLabel,
+    detalleSafe: detalle || ''
+  };
+};
+
+// CU-052 (compra exitosa) + (clase asignada solo si aplica)
 export const sendCompraExitosaEmails = async ({
   compra,
   estudianteEmail,
@@ -58,61 +72,80 @@ export const sendCompraExitosaEmails = async ({
 }) => {
   try {
     const adminEmail = await getAdminEmail();
+    const { tipoLabel, detalleSafe } = buildEmailCompra({ tipo, detalle });
 
-    const htmlEstudiante = `
-      <h2>Compra exitosa</h2>
-      <p>Tu compra fue confirmada exitosamente.</p>
-      <p><strong>Tipo:</strong> ${tipo}</p>
-      ${detalle ? `<p>${detalle}</p>` : ''}
-      <p>Pronto recibirás un correo con el link de tu clase (si aplica).</p>
-    `;
+    // ESTUDIANTE
+    const htmlEstudiante =
+      tipo === 'clase_personalizada'
+        ? `
+          <p>Tu compra fue confirmada exitosamente.</p>
+          <p><b>Tipo:</b> ${tipoLabel}</p>
+          ${detalleSafe ? `<p>${detalleSafe}</p>` : ''}
+          <p>Pronto recibirás un correo con el link de tu clase (cuando el profesor lo cree).</p>
+        `
+        : `
+          <p>Tu compra fue confirmada exitosamente.</p>
+          <p><b>Tipo:</b> ${tipoLabel}</p>
+          ${detalleSafe ? `<p>${detalleSafe}</p>` : ''}
+          <p>Ya puedes acceder a tu contenido desde la plataforma.</p>
+        `;
 
+    // ADMIN
     const htmlAdmin = `
-      <h2>Nueva compra confirmada</h2>
-      <p><strong>Compra:</strong> ${compra?.id}</p>
-      <p><strong>Tipo:</strong> ${tipo}</p>
-      ${profesorNombre ? `<p><strong>Profesor asignado:</strong> ${profesorNombre}</p>` : ''}
-      ${detalle ? `<p>${detalle}</p>` : ''}
+      <p><b>Compra:</b> ${compra?.id || ''}</p>
+      <p><b>Tipo:</b> ${tipoLabel}</p>
+      ${profesorNombre ? `<p><b>Profesor:</b> ${profesorNombre}</p>` : ''}
+      ${detalleSafe ? `<p>${detalleSafe}</p>` : ''}
     `;
 
-    const htmlProfesor = `
-      <h2>Tienes una clase asignada</h2>
-      <p>Se te asignó una sesión. Por favor crea el link de Google Meet y regístralo en el sistema.</p>
-      ${detalle ? `<p>${detalle}</p>` : ''}
+    // PROFESOR (solo aplica para clase personalizada)
+    const htmlProfesorClase = `
+      <p>Se te asignó una sesión.</p>
+      <p>Por favor crea el link de Google Meet y regístralo en el sistema.</p>
+      ${detalleSafe ? `<p>${detalleSafe}</p>` : ''}
     `;
 
     const tasks = [];
 
     if (estudianteEmail) {
-      tasks.push(resend.emails.send({
-        from: EMAIL_FROM,
-        to: estudianteEmail,
-        subject: 'Compra confirmada - Academia Parchada',
-        html: htmlEstudiante
-      }));
+      tasks.push(
+        resend.emails.send({
+          from: EMAIL_FROM,
+          to: estudianteEmail,
+          subject: 'Compra confirmada - Academia Parchada',
+          html: htmlEstudiante
+        })
+      );
     }
 
-    // Único correo al admin: en compra (OK)
     if (adminEmail) {
-      tasks.push(resend.emails.send({
-        from: EMAIL_FROM,
-        to: adminEmail,
-        subject: `Compra confirmada #${compra?.id || ''}`,
-        html: htmlAdmin
-      }));
+      tasks.push(
+        resend.emails.send({
+          from: EMAIL_FROM,
+          to: adminEmail,
+          subject: `Compra confirmada #${compra?.id || ''}`,
+          html: htmlAdmin
+        })
+      );
     }
 
-    // Notificación al profesor en compra/asignación (OK)
-    if (profesorEmail) {
-      tasks.push(resend.emails.send({
-        from: EMAIL_FROM,
-        to: profesorEmail,
-        subject: 'Nueva clase asignada',
-        html: htmlProfesor
-      }));
+    // Aquí estaba el error lógico: estabas enviando al profesor SIEMPRE que hubiera profesorEmail,
+    // incluso en cursos. Se limita a clase_personalizada.
+    if (tipo === 'clase_personalizada' && profesorEmail) {
+      tasks.push(
+        resend.emails.send({
+          from: EMAIL_FROM,
+          to: profesorEmail,
+          subject: 'Nueva clase asignada',
+          html: htmlProfesorClase
+        })
+      );
     }
 
-    await Promise.allSettled(tasks);
+    const results = await Promise.allSettled(tasks);
+    results.forEach((r) => {
+      if (r.status === 'rejected') console.error('Email send rejected:', r.reason);
+    });
   } catch (err) {
     console.error('Error sendCompraExitosaEmails:', err);
   }
@@ -131,9 +164,9 @@ export const sendMeetLinkEmails = async ({ sesion, estudianteEmail }) => {
       to: estudianteEmail,
       subject: 'Tu clase ya tiene link de Meet',
       html: `
-        <h2>Link de clase listo</h2>
-        <p><strong>Fecha/Hora:</strong> ${when}</p>
-        <p><strong>Link Meet:</strong> <a href="${link}">${link}</a></p>
+        <p>Tu clase ya tiene link de Google Meet.</p>
+        <p><b>Fecha/Hora:</b> ${when}</p>
+        <p><b>Link Meet:</b> ${link || ''}</p>
       `
     });
   } catch (err) {
@@ -149,10 +182,10 @@ export const sendCredencialesProfesorEmail = async ({ to, nombre, email, passwor
       to,
       subject: 'Credenciales de profesor - Academia Parchada',
       html: `
-        <h2>Cuenta de profesor creada</h2>
-        <p><strong>Nombre:</strong> ${nombre}</p>
-        <p><strong>Email:</strong> ${email}</p>
-        <p><strong>Contraseña temporal:</strong> ${passwordTemp}</p>
+        <p>Hola ${nombre || ''},</p>
+        <p>Estas son tus credenciales de acceso:</p>
+        <p><b>Email:</b> ${email}</p>
+        <p><b>Contraseña temporal:</b> ${passwordTemp}</p>
       `
     });
   } catch (err) {
