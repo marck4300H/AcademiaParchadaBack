@@ -49,6 +49,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         .select('timezone')
         .eq('id', estudiante_id)
         .single();
+
       estudianteTZFromDB = estDB?.timezone || null;
     }
 
@@ -354,7 +355,7 @@ export const webhookMercadoPago = async (req, res) => {
       // Traer compra ya actualizada
       const { data: compra, error: errCompra } = await supabase
         .from('compra')
-        .select('id,tipo_compra,estudiante_id,curso_id,clase_personalizada_id,monto_total,mp_raw')
+        .select('id,tipo_compra,estudiante_id,curso_id,clase_personalizada_id,monto_total,mp_raw,moneda')
         .eq('id', external_reference)
         .single();
 
@@ -409,63 +410,80 @@ export const webhookMercadoPago = async (req, res) => {
           return res.status(200).send('OK');
         }
 
-        // Datos para templates
+        // Datos para templates (incluye telefono/timezone, como tu template espera)
         const { data: estudiante } = await supabase
           .from('usuario')
-          .select('id,nombre,apellido,email')
+          .select('id,nombre,apellido,email,telefono,timezone')
           .eq('id', compra.estudiante_id)
           .single();
 
         const { data: profesor } = await supabase
           .from('usuario')
-          .select('id,nombre,apellido,email')
+          .select('id,nombre,apellido,email,timezone')
           .eq('id', profesorId)
           .single();
 
         const adminEmail = await getAdminEmail();
 
-        // Notificaciones: admin, profesor, estudiante
+        // ======= CORRECCIÓN: envío robusto + firma correcta del emailService =======
+        const metaEmail = compra?.mp_raw?.metadata || {};
+        const tasks = [];
+
+        // Admin (firma: { adminEmail, compraId, montoTotal, profesor, estudiante })
         if (adminEmail) {
-          await sendCompraClasePersonalizadaAdminEmail({
-            to: adminEmail,
-            compra,
-            estudiante,
-            profesor,
-            sesion: sesionCreada
-          });
+          tasks.push(
+            sendCompraClasePersonalizadaAdminEmail({
+              adminEmail,
+              compraId: compra.id,
+              montoTotal: compra.monto_total,
+              profesor,
+              estudiante
+            })
+          );
         }
 
+        // Profesor (firma: { profesorEmail, compraId, asignaturaNombre, fechaHoraIso, duracionHoras, profesorTimeZone, estudiante })
         if (profesor?.email) {
-          await sendCompraClasePersonalizadaProfesorEmail({
-            to: profesor.email,
-            compra,
-            estudiante,
-            profesor,
-            sesion: sesionCreada
-          });
+          tasks.push(
+            sendCompraClasePersonalizadaProfesorEmail({
+              profesorEmail: profesor.email,
+              compraId: compra.id,
+              asignaturaNombre: metaEmail?.asignatura_nombre || 'Clase personalizada',
+              fechaHoraIso: metaEmail?.fecha_hora || sesionCreada?.fecha_hora,
+              duracionHoras: metaEmail?.duracion_horas || null,
+              profesorTimeZone: metaEmail?.profesor_timezone || profesor?.timezone || null,
+              estudiante
+            })
+          );
         }
 
+        // Estudiante (firma: { estudianteEmail, compraId, profesor, fechaHoraIso })
         if (estudiante?.email) {
-          await sendCompraClasePersonalizadaEstudianteEmail({
-            to: estudiante.email,
-            compra,
-            estudiante,
-            profesor,
-            sesion: sesionCreada
-          });
+          tasks.push(
+            sendCompraClasePersonalizadaEstudianteEmail({
+              estudianteEmail: estudiante.email,
+              compraId: compra.id,
+              profesor,
+              fechaHoraIso: metaEmail?.fecha_hora || sesionCreada?.fecha_hora
+            })
+          );
         }
 
+        const results = await Promise.allSettled(tasks);
+        results.forEach((r) => {
+          if (r.status === 'rejected') {
+            console.error('❌ Error enviando correo (clase_personalizada):', r.reason);
+          }
+        });
+
         return res.status(200).send('OK');
       }
 
-      // ======= CURSO: (no lo toco; pero si quieres aquí van tus 3 correos) =======
+      // ======= CURSO / PAQUETE HORAS: no se toca aquí =======
       if (compra.tipo_compra === 'curso' && compra.curso_id) {
-        // Si tu flujo actual envía correos en curso desde otro lado, no tocar.
-        // Si quieres que también lo haga el webhook, dime y lo ajustamos.
         return res.status(200).send('OK');
       }
 
-      // ======= PAQUETE HORAS: (no lo toco) =======
       if (compra.tipo_compra === 'paquete_horas') {
         return res.status(200).send('OK');
       }
