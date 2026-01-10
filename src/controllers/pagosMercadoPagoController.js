@@ -29,7 +29,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       cantidad_horas,
       estudiante,
       fecha_hora,
-      estudiante_timezone, // NUEVO: opcional para ISO sin zona
+      estudiante_timezone, // opcional
       descripcion_estudiante,
       documento_url
     } = req.body;
@@ -410,7 +410,7 @@ export const webhookMercadoPago = async (req, res) => {
           return res.status(200).send('OK');
         }
 
-        // Datos para templates (incluye telefono/timezone, como tu template espera)
+        // Datos para templates
         const { data: estudiante } = await supabase
           .from('usuario')
           .select('id,nombre,apellido,email,telefono,timezone')
@@ -425,11 +425,10 @@ export const webhookMercadoPago = async (req, res) => {
 
         const adminEmail = await getAdminEmail();
 
-        // ======= CORRECCIÓN: envío robusto + firma correcta del emailService =======
+        // ======= Envío de correos (admin, profesor, estudiante) robusto =======
         const metaEmail = compra?.mp_raw?.metadata || {};
         const tasks = [];
 
-        // Admin (firma: { adminEmail, compraId, montoTotal, profesor, estudiante })
         if (adminEmail) {
           tasks.push(
             sendCompraClasePersonalizadaAdminEmail({
@@ -442,7 +441,6 @@ export const webhookMercadoPago = async (req, res) => {
           );
         }
 
-        // Profesor (firma: { profesorEmail, compraId, asignaturaNombre, fechaHoraIso, duracionHoras, profesorTimeZone, estudiante })
         if (profesor?.email) {
           tasks.push(
             sendCompraClasePersonalizadaProfesorEmail({
@@ -457,7 +455,7 @@ export const webhookMercadoPago = async (req, res) => {
           );
         }
 
-        // Estudiante (firma: { estudianteEmail, compraId, profesor, fechaHoraIso })
+        // >>>>> FIX: asegurar envío al estudiante + log si email es null <<<<<
         if (estudiante?.email) {
           tasks.push(
             sendCompraClasePersonalizadaEstudianteEmail({
@@ -467,6 +465,11 @@ export const webhookMercadoPago = async (req, res) => {
               fechaHoraIso: metaEmail?.fecha_hora || sesionCreada?.fecha_hora
             })
           );
+        } else {
+          console.error('❌ No se pudo notificar al estudiante: estudiante.email viene null', {
+            compraId: compra.id,
+            estudianteId: compra.estudiante_id
+          });
         }
 
         const results = await Promise.allSettled(tasks);
