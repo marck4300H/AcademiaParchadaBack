@@ -412,53 +412,47 @@ export const webhookMercadoPago = async (req, res) => {
           .eq('id', profesorId)
           .single();
 
-        const adminEmail = await getAdminEmail();
+        const adminEmail = await getAdminEmail(); // lee ADMIN_EMAIL env si existe [file:363]
         const metaEmail = compra?.mp_raw?.metadata || {};
 
-        // =============================
-        // SOLUCIÓN DEFINITIVA: 3 emails
-        // =============================
-        const tasks = [];
+        // =====================================================
+        // FIX FINAL: enviar admin+profesor+estudiante en paralelo
+        // (3 promesas SIEMPRE, sin condicionales que rompan flujo)
+        // =====================================================
+        const noop = Promise.resolve(null);
 
-        // Admin
-        if (adminEmail) {
-          tasks.push(
-            sendCompraClasePersonalizadaAdminEmail({
-              adminEmail,
-              compraId: compra.id,
-              montoTotal: compra.monto_total,
-              profesor,
-              estudiante
-            })
-          );
-        }
+        const tasks = [
+          adminEmail
+            ? sendCompraClasePersonalizadaAdminEmail({
+                adminEmail,
+                compraId: compra.id,
+                montoTotal: compra.monto_total,
+                profesor,
+                estudiante
+              })
+            : noop,
 
-        // Profesor
-        if (profesor?.email) {
-          tasks.push(
-            sendCompraClasePersonalizadaProfesorEmail({
-              profesorEmail: profesor.email,
-              compraId: compra.id,
-              asignaturaNombre: metaEmail?.asignatura_nombre || 'Clase personalizada',
-              fechaHoraIso: metaEmail?.fecha_hora || sesionCreada?.fecha_hora,
-              duracionHoras: metaEmail?.duracion_horas || null,
-              profesorTimeZone: metaEmail?.profesor_timezone || profesor?.timezone || null,
-              estudiante
-            })
-          );
-        }
+          profesor?.email
+            ? sendCompraClasePersonalizadaProfesorEmail({
+                profesorEmail: profesor.email,
+                compraId: compra.id,
+                asignaturaNombre: metaEmail?.asignatura_nombre || 'Clase personalizada',
+                fechaHoraIso: metaEmail?.fecha_hora || sesionCreada?.fecha_hora,
+                duracionHoras: metaEmail?.duracion_horas || null,
+                profesorTimeZone: metaEmail?.profesor_timezone || profesor?.timezone || null,
+                estudiante
+              })
+            : noop,
 
-        // Estudiante
-        if (estudiante?.email) {
-          tasks.push(
-            sendCompraClasePersonalizadaEstudianteEmail({
-              estudianteEmail: estudiante.email,
-              compraId: compra.id,
-              profesor,
-              fechaHoraIso: metaEmail?.fecha_hora || sesionCreada?.fecha_hora
-            })
-          );
-        }
+          estudiante?.email
+            ? sendCompraClasePersonalizadaEstudianteEmail({
+                estudianteEmail: estudiante.email,
+                compraId: compra.id,
+                profesor,
+                fechaHoraIso: metaEmail?.fecha_hora || sesionCreada?.fecha_hora
+              })
+            : noop
+        ];
 
         const results = await Promise.allSettled(tasks);
         results.forEach((r) => {
