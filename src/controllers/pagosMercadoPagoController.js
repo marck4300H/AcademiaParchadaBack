@@ -164,7 +164,6 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       metadata = {
         ...metadata,
         clase_personalizada_id: clase.id,
-
         fecha_hora: String(fecha_hora),
         estudiante_timezone: estudianteTimeZone,
         descripcion_estudiante: descripcion_estudiante || null,
@@ -173,7 +172,6 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         profesor_id: asignacion.profesor?.id || null,
         franja_horaria_ids: asignacion.franjasUtilizadas || [],
         profesor_timezone: asignacion.profesorTimeZone || null,
-
         duracion_horas: clase.duracion_horas,
         asignatura_id: clase.asignatura_id,
         asignatura_nombre: clase?.asignatura?.nombre || null
@@ -283,6 +281,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
   }
 };
 
+// WEBHOOK: cuando queda completado -> crear sesion_clase y notificar a los 3
 export const webhookMercadoPago = async (req, res) => {
   try {
     const topic = req.query.topic || req.body?.type || req.body?.topic;
@@ -358,7 +357,7 @@ export const webhookMercadoPago = async (req, res) => {
 
       if (errCompra || !compra?.id) return res.status(200).send('OK');
 
-      // ======= CLASE PERSONALIZADA =======
+      // ======= CLASE PERSONALIZADA: crear sesion_clase y notificar =======
       if (compra.tipo_compra === 'clase_personalizada' && compra.clase_personalizada_id) {
         const { data: sesionExist } = await supabase
           .from('sesion_clase')
@@ -405,7 +404,7 @@ export const webhookMercadoPago = async (req, res) => {
           return res.status(200).send('OK');
         }
 
-        // Datos para emails
+        // Datos para templates
         const { data: estudiante } = await supabase
           .from('usuario')
           .select('id,nombre,apellido,email,telefono,timezone')
@@ -418,11 +417,13 @@ export const webhookMercadoPago = async (req, res) => {
           .eq('id', profesorId)
           .single();
 
-        const adminEmail = await getAdminEmail();
+        const adminEmail = await getAdminEmail(); // lee process.env.ADMIN_EMAIL si existe [file:363]
         const metaEmail = compra?.mp_raw?.metadata || {};
 
+        // ======= FIX: tasks + allSettled SIEMPRE fuera de else =======
         const tasks = [];
 
+        // Admin
         if (adminEmail) {
           tasks.push(
             sendCompraClasePersonalizadaAdminEmail({
@@ -435,6 +436,7 @@ export const webhookMercadoPago = async (req, res) => {
           );
         }
 
+        // Profesor
         if (profesor?.email) {
           tasks.push(
             sendCompraClasePersonalizadaProfesorEmail({
@@ -449,7 +451,7 @@ export const webhookMercadoPago = async (req, res) => {
           );
         }
 
-        // ✅ ESTE ES EL FIX REAL: fuera de cualquier else raro y SIEMPRE se evalúa
+        // Estudiante
         if (estudiante?.email) {
           tasks.push(
             sendCompraClasePersonalizadaEstudianteEmail({
@@ -459,14 +461,8 @@ export const webhookMercadoPago = async (req, res) => {
               fechaHoraIso: metaEmail?.fecha_hora || sesionCreada?.fecha_hora
             })
           );
-        } else {
-          console.error('❌ estudiante.email null (no debería):', {
-            compraId: compra.id,
-            estudianteId: compra.estudiante_id
-          });
         }
 
-        // ✅ SIEMPRE se ejecuta
         const results = await Promise.allSettled(tasks);
         results.forEach((r) => {
           if (r.status === 'rejected') {
@@ -477,7 +473,7 @@ export const webhookMercadoPago = async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      // ======= CURSO / PAQUETE HORAS (no se toca) =======
+      // ======= CURSO / PAQUETE HORAS: no se toca aquí =======
       if (compra.tipo_compra === 'curso' && compra.curso_id) return res.status(200).send('OK');
       if (compra.tipo_compra === 'paquete_horas') return res.status(200).send('OK');
 
