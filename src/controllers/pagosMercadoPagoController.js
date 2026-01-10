@@ -20,15 +20,52 @@ import {
 
 dotenv.config();
 
-// =====================================================
-// ✅ FUNCIÓN DEFINITIVA: notifica a admin/profesor/estudiante
-// Se llama justo después de crear sesion_clase.
-// =====================================================
-const notificarCompraClasePersonalizada = async ({
-  compra,
-  sesionCreada,
-  profesorId
-}) => {
+/**
+ * Extrae el id del webhook de MercadoPago de forma segura.
+ * Tus ejemplos llegan así:
+ * - body.resource: "141502985702" (payment) o URL (merchant_order)
+ * - query.id: "141502985702" o "37191638244"
+ */
+const extractMercadoPagoId = (req) => {
+  const raw =
+    req.query?.id ||
+    req.query?.['data.id'] ||
+    req.body?.data?.id ||
+    req.body?.id ||
+    req.body?.resource ||
+    req.body?.body?.resource || // por si en BD guardas "body": {resource: ...}
+    req.body?.body?.id;
+
+  if (!raw) return null;
+
+  // si viene como URL -> tomar último segmento numérico
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith('http')) {
+      return trimmed.split('/').filter(Boolean).pop() || null;
+    }
+    return trimmed;
+  }
+
+  // si viene como número
+  if (typeof raw === 'number') return String(raw);
+
+  // si viene como objeto (raro), intentar campos comunes
+  if (typeof raw === 'object') {
+    const candidate = raw.id || raw.data?.id || raw.resource;
+    if (!candidate) return null;
+    if (typeof candidate === 'string' && candidate.startsWith('http')) {
+      return candidate.split('/').filter(Boolean).pop() || null;
+    }
+    return String(candidate);
+  }
+
+  return null;
+};
+
+const isNumericId = (value) => /^\d+$/.test(String(value || '').trim());
+
+const notificarCompraClasePersonalizada = async ({ compra, sesionCreada, profesorId }) => {
   const metaEmail = compra?.mp_raw?.metadata || {};
 
   const { data: estudiante } = await supabase
@@ -43,12 +80,11 @@ const notificarCompraClasePersonalizada = async ({
     .eq('id', profesorId)
     .single();
 
-  const adminEmail = await getAdminEmail(); // usa process.env.ADMIN_EMAIL si existe [file:365]
+  const adminEmail = await getAdminEmail(); // env ADMIN_EMAIL o rol administrador [file:365]
 
   const noop = Promise.resolve(null);
 
   const tasks = [
-    // Admin
     adminEmail
       ? sendCompraClasePersonalizadaAdminEmail({
           adminEmail,
@@ -59,7 +95,6 @@ const notificarCompraClasePersonalizada = async ({
         })
       : noop,
 
-    // Profesor
     profesor?.email
       ? sendCompraClasePersonalizadaProfesorEmail({
           profesorEmail: profesor.email,
@@ -72,7 +107,6 @@ const notificarCompraClasePersonalizada = async ({
         })
       : noop,
 
-    // Estudiante
     estudiante?.email
       ? sendCompraClasePersonalizadaEstudianteEmail({
           estudianteEmail: estudiante.email,
@@ -90,6 +124,13 @@ const notificarCompraClasePersonalizada = async ({
       console.error('❌ Error enviando correo (clase_personalizada):', r.reason);
     }
   });
+
+  // Debug útil para tu caso: saber si adminEmail fue null
+  if (!adminEmail) {
+    console.error('⚠️ Admin email no resuelto (ADMIN_EMAIL/BD). No se envió correo a admin.', {
+      compraId: compra?.id
+    });
+  }
 };
 
 export const crearCheckoutMercadoPago = async (req, res) => {
@@ -115,6 +156,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
     // Si viene por token, se puede tomar timezone del estudiante desde BD
     let estudianteTZFromDB = null;
+
     if (estudiante_id) {
       const { data: estDB } = await supabase
         .from('usuario')
@@ -153,15 +195,17 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
       const { data: nuevoEst, error: errNuevo } = await supabase
         .from('usuario')
-        .insert([{
-          email,
-          nombre,
-          apellido,
-          telefono,
-          timezone: timezone || null,
-          password_hash: passwordHash,
-          rol: 'estudiante'
-        }])
+        .insert([
+          {
+            email,
+            nombre,
+            apellido,
+            telefono,
+            timezone: timezone || null,
+            password_hash: passwordHash,
+            rol: 'estudiante'
+          }
+        ])
         .select()
         .single();
 
@@ -192,24 +236,26 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       titulo = `Curso: ${curso.nombre}`;
       monto_total = Number(curso.precio);
       metadata = { ...metadata, curso_id: curso.id };
-
     } else if (tipo_compra === 'clase_personalizada') {
       if (!clase_personalizada_id) {
         return res.status(400).json({ success: false, message: 'clase_personalizada_id es requerido' });
       }
+
       if (!fecha_hora) {
         return res.status(400).json({ success: false, message: 'fecha_hora es requerida para clase_personalizada' });
       }
 
       const { data: clase, error } = await supabase
         .from('clase_personalizada')
-        .select(`
+        .select(
+          `
           id,
           precio,
           duracion_horas,
           asignatura_id,
           asignatura:asignatura_id (id,nombre)
-        `)
+        `
+        )
         .eq('id', clase_personalizada_id)
         .single();
 
@@ -246,11 +292,11 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         asignatura_id: clase.asignatura_id,
         asignatura_nombre: clase?.asignatura?.nombre || null
       };
-
     } else if (tipo_compra === 'paquete_horas') {
       if (!clase_personalizada_id) {
         return res.status(400).json({ success: false, message: 'clase_personalizada_id es requerido' });
       }
+
       if (!cantidad_horas || Number(cantidad_horas) <= 0) {
         return res.status(400).json({ success: false, message: 'cantidad_horas debe ser > 0' });
       }
@@ -352,18 +398,8 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
 export const webhookMercadoPago = async (req, res) => {
   try {
-    const topic = req.query.topic || req.body?.type || req.body?.topic;
-
-    let id =
-      req.query.id ||
-      req.query['data.id'] ||
-      req.body?.data?.id ||
-      req.body?.id ||
-      req.body?.resource;
-
-    if (typeof id === 'string' && id.startsWith('http')) {
-      id = id.split('/').filter(Boolean).pop();
-    }
+    const topic = req.query.topic || req.body?.type || req.body?.topic || req.body?.body?.topic;
+    const id = extractMercadoPagoId(req);
 
     if (!topic || !id) return res.status(200).send('OK');
 
@@ -378,17 +414,27 @@ export const webhookMercadoPago = async (req, res) => {
 
     if (yaProcesado?.id) return res.status(200).send('OK');
 
-    await supabase
-      .from('webhook_evento_pago')
-      .insert([{
+    await supabase.from('webhook_evento_pago').insert([
+      {
         proveedor_pago: 'mercadopago',
         event_id: eventId,
         tipo_evento: topic,
         payload: { query: req.query, body: req.body, headers: req.headers }
-      }]);
+      }
+    ]);
 
+    // ------------------------
+    // PAYMENT / PAYMENT.UPDATED
+    // ------------------------
     if (topic === 'payment' || topic === 'payment.updated') {
-      const paymentId = String(id);
+      const paymentId = String(id || '').trim();
+
+      // ✅ Evita el "Invalid Id." que te tumba el webhook completo
+      if (!isNumericId(paymentId)) {
+        console.error('❌ Webhook MP: payment id inválido:', { topic, rawId: id, paymentId });
+        return res.status(200).send('OK');
+      }
+
       const payment = await mpPayment.get({ id: paymentId });
 
       const external_reference = payment?.external_reference; // compra.id
@@ -399,8 +445,10 @@ export const webhookMercadoPago = async (req, res) => {
       if (!external_reference) return res.status(200).send('OK');
 
       const nuevoEstado =
-        status === 'approved' ? 'completado'
-          : (status === 'rejected' || status === 'cancelled') ? 'fallido'
+        status === 'approved'
+          ? 'completado'
+          : status === 'rejected' || status === 'cancelled'
+            ? 'fallido'
             : 'pendiente';
 
       await supabase
@@ -436,6 +484,7 @@ export const webhookMercadoPago = async (req, res) => {
         if (sesionExist?.id) return res.status(200).send('OK');
 
         const meta = compra?.mp_raw?.metadata || {};
+
         const fechaHora = meta?.fecha_hora || null;
         const profesorId = meta?.profesor_id || null;
         const franjaIds = meta?.franja_horaria_ids || [];
@@ -454,16 +503,18 @@ export const webhookMercadoPago = async (req, res) => {
 
         const { data: sesionCreada, error: sesionError } = await supabase
           .from('sesion_clase')
-          .insert([{
-            compra_id: compra.id,
-            profesor_id: profesorId,
-            descripcion_estudiante: descripcionEst,
-            documento_url: documentoUrl,
-            fecha_hora: new Date(fechaHora).toISOString(),
-            link_meet: null,
-            estado: 'programada',
-            franja_horaria_ids: franjaIds
-          }])
+          .insert([
+            {
+              compra_id: compra.id,
+              profesor_id: profesorId,
+              descripcion_estudiante: descripcionEst,
+              documento_url: documentoUrl,
+              fecha_hora: new Date(fechaHora).toISOString(),
+              link_meet: null,
+              estado: 'programada',
+              franja_horaria_ids: franjaIds
+            }
+          ])
           .select()
           .single();
 
@@ -472,24 +523,31 @@ export const webhookMercadoPago = async (req, res) => {
           return res.status(200).send('OK');
         }
 
-        // ✅ Aquí es donde se notifica a los 3 (después de crear sesión)
-        await notificarCompraClasePersonalizada({
-          compra,
-          sesionCreada,
-          profesorId
-        });
+        // ✅ Notifica a admin + profesor + estudiante (no depende de merchant_order)
+        await notificarCompraClasePersonalizada({ compra, sesionCreada, profesorId });
 
         return res.status(200).send('OK');
       }
 
+      // (aquí puedes implementar curso/paquete luego sin romper el flujo)
       if (compra.tipo_compra === 'curso' && compra.curso_id) return res.status(200).send('OK');
       if (compra.tipo_compra === 'paquete_horas') return res.status(200).send('OK');
 
       return res.status(200).send('OK');
     }
 
+    // ------------------------
+    // MERCHANT_ORDER
+    // ------------------------
     if (topic === 'merchant_order') {
-      const orderId = String(id);
+      const orderId = String(id || '').trim();
+
+      // ✅ Evita Invalid Id por URLs raras / ids no numéricos
+      if (!isNumericId(orderId)) {
+        console.error('❌ Webhook MP: merchant_order id inválido:', { topic, rawId: id, orderId });
+        return res.status(200).send('OK');
+      }
+
       await mpMerchantOrder.get({ id: orderId });
       return res.status(200).send('OK');
     }
