@@ -282,7 +282,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
   }
 };
 
-// Mantén tu webhook como ya lo tienes (que consume metadata profesor_id + franja_horaria_ids y no reasigna).
+// WEBHOOK: corrección mínima -> SI pago completado, crear sesion_clase usando metadata (sin reasignar)
 export const webhookMercadoPago = async (req, res) => {
   try {
     const topic = req.query.topic || req.body?.type || req.body?.topic;
@@ -324,7 +324,7 @@ export const webhookMercadoPago = async (req, res) => {
       const paymentId = String(id);
       const payment = await mpPayment.get({ id: paymentId });
 
-      const external_reference = payment?.external_reference;
+      const external_reference = payment?.external_reference; // compra.id
       const status = payment?.status;
       const status_detail = payment?.status_detail;
       const merchant_order_id = payment?.order?.id ? String(payment.order.id) : null;
@@ -347,6 +347,120 @@ export const webhookMercadoPago = async (req, res) => {
           mp_raw: payment
         })
         .eq('id', external_reference);
+
+      // ===== CORRECCIÓN: antes retornaba aquí y nunca creaba la sesión =====
+      if (nuevoEstado !== 'completado') return res.status(200).send('OK');
+
+      // Traer compra (para saber si es clase_personalizada) + metadata
+      const { data: compra, error: errCompra } = await supabase
+        .from('compra')
+        .select('id, tipo_compra, estudiante_id, curso_id, clase_personalizada_id, monto_total, mp_raw')
+        .eq('id', external_reference)
+        .single();
+
+      if (errCompra || !compra?.id) return res.status(200).send('OK');
+
+      // ======= SOLO si es clase_personalizada: crear sesion_clase =======
+      if (compra.tipo_compra === 'clase_personalizada' && compra.clase_personalizada_id) {
+        // Idempotencia: si ya existe sesión para la compra, no duplicar
+        const { data: sesionExist } = await supabase
+          .from('sesion_clase')
+          .select('id')
+          .eq('compra_id', compra.id)
+          .maybeSingle();
+
+        if (sesionExist?.id) {
+          return res.status(200).send('OK');
+        }
+
+        const meta = compra?.mp_raw?.metadata || {};
+
+        // OJO: en tu checkout nuevo guardas claves snake_case:
+        const fechaHora = meta?.fecha_hora || null;
+        const profesorId = meta?.profesor_id || null;
+        const franjaIds = meta?.franja_horaria_ids || [];
+        const descripcionEst = meta?.descripcion_estudiante || null;
+        const documentoUrl = meta?.documento_url || null;
+
+        // Si falta metadata crítica, no reasignar en webhook (para no romper lo que ya funciona)
+        if (!fechaHora || !profesorId || !Array.isArray(franjaIds) || franjaIds.length === 0) {
+          console.error('❌ metadata incompleta para crear sesion_clase', {
+            compraId: compra.id,
+            fechaHora,
+            profesorId,
+            franjaIds
+          });
+          return res.status(200).send('OK');
+        }
+
+        const { data: sesionCreada, error: sesionError } = await supabase
+          .from('sesion_clase')
+          .insert([{
+            compra_id: compra.id,
+            profesor_id: profesorId,
+            descripcion_estudiante: descripcionEst,
+            documento_url: documentoUrl,
+            fecha_hora: new Date(fechaHora).toISOString(),
+            link_meet: null,
+            estado: 'programada',
+            franja_horaria_ids: franjaIds
+          }])
+          .select()
+          .single();
+
+        if (sesionError) {
+          console.error('❌ Error creando sesion_clase post-pago:', sesionError);
+          return res.status(200).send('OK');
+        }
+
+        // Emails (sin tocar tu flujo actual: usa las funciones ya existentes)
+        const { data: estudiante } = await supabase
+          .from('usuario')
+          .select('id,nombre,apellido,email')
+          .eq('id', compra.estudiante_id)
+          .single();
+
+        const { data: profesor } = await supabase
+          .from('usuario')
+          .select('id,nombre,apellido,email')
+          .eq('id', profesorId)
+          .single();
+
+        const adminEmail = await getAdminEmail();
+
+        // Admin
+        if (adminEmail) {
+          await sendCompraClasePersonalizadaAdminEmail({
+            to: adminEmail,
+            compra,
+            estudiante,
+            profesor,
+            sesion: sesionCreada
+          });
+        }
+
+        // Profesor
+        if (profesor?.email) {
+          await sendCompraClasePersonalizadaProfesorEmail({
+            to: profesor.email,
+            compra,
+            estudiante,
+            profesor,
+            sesion: sesionCreada
+          });
+        }
+
+        // Estudiante
+        if (estudiante?.email) {
+          await sendCompraClasePersonalizadaEstudianteEmail({
+            to: estudiante.email,
+            compra,
+            estudiante,
+            profesor,
+            sesion: sesionCreada
+          });
+        }
+      }
 
       return res.status(200).send('OK');
     }
