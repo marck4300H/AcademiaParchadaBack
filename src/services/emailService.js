@@ -40,11 +40,11 @@ const formatDateTimeInTZ = (isoString, timeZone) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * ✅ Envío estricto:
+ * ✅ Envío robusto (sin duplicar):
  * - Normaliza email
- * - Reintenta
- * - Lanza error si Resend falla
- * - Lanza error si Resend no retorna id (para que NO marque ok=true falso)
+ * - Reintenta SOLO si hay error real (throw / resp.error)
+ * - Soporta respuesta { data, error }
+ * - NO lanza error solo porque no venga id (evita reintentos innecesarios)
  */
 const sendEmailStrict = async ({ to, subject, html, bcc = null }, retries = 2) => {
   const toNorm = normalizeEmail(to);
@@ -61,7 +61,7 @@ const sendEmailStrict = async ({ to, subject, html, bcc = null }, retries = 2) =
     from: EMAIL_FROM,
     to: toNorm,
     subject,
-    html
+    html,
   };
   if (bccNorm) payload.bcc = bccNorm;
 
@@ -70,20 +70,30 @@ const sendEmailStrict = async ({ to, subject, html, bcc = null }, retries = 2) =
   for (let attempt = 1; attempt <= retries + 1; attempt++) {
     try {
       if (EMAIL_DEBUG) {
-        console.log('📤 Sending email (Resend)', { to: toNorm, subject, attempt, bcc: bccNorm || null });
+        console.log('📤 Sending email (Resend)', {
+          to: toNorm,
+          subject,
+          attempt,
+          bcc: bccNorm || null,
+        });
       }
 
       const resp = await resend.emails.send(payload);
-      const resendId = resp?.id || null;
+
+      // Resend suele responder { data, error }
+      if (resp?.error) {
+        throw new Error(resp.error?.message || JSON.stringify(resp.error));
+      }
+
+      // id puede venir como resp.data.id (o resp.id según versión)
+      const resendId = resp?.data?.id ?? resp?.id ?? null;
 
       if (EMAIL_DEBUG) {
         console.log('📨 Resend response', { to: toNorm, subject, resendId });
+        if (!resendId) console.log('ℹ️ Resend raw response (no id)', resp);
       }
 
-      if (!resendId) {
-        throw new Error('Resend no retornó id; no se puede confirmar envío.');
-      }
-
+      // Importante: NO fallar si no hay id (para no duplicar por reintentos)
       return { resendId, to: toNorm };
     } catch (err) {
       lastErr = err;
@@ -91,8 +101,9 @@ const sendEmailStrict = async ({ to, subject, html, bcc = null }, retries = 2) =
         to: toNorm,
         subject,
         attempt,
-        error: err?.message || String(err)
+        error: err?.message || String(err),
       });
+
       if (attempt <= retries) await sleep(350 * attempt);
     }
   }
@@ -121,7 +132,7 @@ export const sendWelcomeEmail = async ({ to, nombre }) => {
         <p>✔ Clases personalizadas<br/>✔ Asesorías<br/>✔ Ejercicios y trabajos resueltos<br/>✔ Modalidad online</p>
         <p>👉 Revisa el contenido disponible y no dudes en escribir si necesitas apoyo.</p>
         <p>Parche Académico</p>
-      `)
+      `),
     },
     1
   );
@@ -142,7 +153,7 @@ export const sendMeetLinkEmails = async ({ sesion, estudianteEmail, estudianteTi
         <h2>Link de tu clase listo ✅</h2>
         <p><strong>Fecha y hora:</strong> ${safe(when)}</p>
         <p><strong>Link Meet:</strong> <a href="${safe(link)}">${safe(link)}</a></p>
-      `)
+      `),
     },
     2
   );
@@ -161,7 +172,7 @@ export const sendCredencialesProfesorEmail = async ({ to, nombre, email, passwor
         <p><strong>Nombre:</strong> ${safe(nombre)}</p>
         <p><strong>Email:</strong> ${safe(email)}</p>
         <p><strong>Contraseña temporal:</strong> ${safe(passwordTemp)}</p>
-      `)
+      `),
     },
     2
   );
@@ -170,7 +181,13 @@ export const sendCredencialesProfesorEmail = async ({ to, nombre, email, passwor
 // ======================================
 // Compra clase personalizada: Admin
 // ======================================
-export const sendCompraClasePersonalizadaAdminEmail = async ({ adminEmail, compraId, montoTotal, profesor, estudiante }) => {
+export const sendCompraClasePersonalizadaAdminEmail = async ({
+  adminEmail,
+  compraId,
+  montoTotal,
+  profesor,
+  estudiante,
+}) => {
   return sendEmailStrict(
     {
       to: adminEmail,
@@ -186,7 +203,7 @@ export const sendCompraClasePersonalizadaAdminEmail = async ({ adminEmail, compr
         <p><strong>Email:</strong> ${safe(estudiante?.email)}</p>
         <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
         <p><strong>Timezone:</strong> ${safe(estudiante?.timezone)}</p>
-      `)
+      `),
     },
     2
   );
@@ -202,7 +219,7 @@ export const sendCompraClasePersonalizadaProfesorEmail = async ({
   fechaHoraIso,
   duracionHoras,
   profesorTimeZone,
-  estudiante
+  estudiante,
 }) => {
   const whenProfesor = formatDateTimeInTZ(fechaHoraIso, profesorTimeZone || DEFAULT_TZ);
 
@@ -223,7 +240,7 @@ export const sendCompraClasePersonalizadaProfesorEmail = async ({
         <p><strong>Email:</strong> ${safe(estudiante?.email)}</p>
         <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
         <p><strong>Timezone:</strong> ${safe(estudiante?.timezone)}</p>
-      `)
+      `),
     },
     2
   );
@@ -237,7 +254,7 @@ export const sendCompraClasePersonalizadaEstudianteEmail = async ({
   compraId,
   profesor,
   fechaHoraIso,
-  estudianteTimeZone
+  estudianteTimeZone,
 }) => {
   const whenEst = formatDateTimeInTZ(fechaHoraIso, estudianteTimeZone || DEFAULT_TZ);
 
@@ -256,7 +273,7 @@ export const sendCompraClasePersonalizadaEstudianteEmail = async ({
         <p><strong>Nombre:</strong> ${safe(profesor?.nombre)} ${safe(profesor?.apellido)}</p>
         <p><strong>Email:</strong> ${safe(profesor?.email)}</p>
         <p>Parche Académico</p>
-      `)
+      `),
     },
     2
   );
@@ -264,13 +281,13 @@ export const sendCompraClasePersonalizadaEstudianteEmail = async ({
 
 /**
  * ✅ Orquestador: consulta BD y envía a admin + profesor + estudiante.
- * SOLO marca ok=true si hay resendId.
+ * Marca ok=true si NO hubo excepción (aunque resendId venga null).
  */
 export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) => {
   const result = {
     admin: { ok: false, error: null, to: null, resendId: null },
     profesor: { ok: false, error: null, to: null, resendId: null },
-    estudiante: { ok: false, error: null, to: null, resendId: null }
+    estudiante: { ok: false, error: null, to: null, resendId: null },
   };
 
   const adminEmail = normalizeEmail(await getAdminEmail());
@@ -283,7 +300,9 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
     .single();
 
   if (errSesion || !sesion?.id) {
-    throw new Error(`notifyClasePersonalizadaAfterSessionCreated: sesion_clase no encontrada (${sesionId})`);
+    throw new Error(
+      `notifyClasePersonalizadaAfterSessionCreated: sesion_clase no encontrada (${sesionId})`
+    );
   }
 
   // 2) Compra
@@ -294,7 +313,9 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
     .single();
 
   if (errCompra || !compra?.id) {
-    throw new Error(`notifyClasePersonalizadaAfterSessionCreated: compra no encontrada (${sesion.compra_id})`);
+    throw new Error(
+      `notifyClasePersonalizadaAfterSessionCreated: compra no encontrada (${sesion.compra_id})`
+    );
   }
 
   // 3) Usuarios
@@ -318,7 +339,7 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
       profesorEmail: normalizeEmail(profesor?.email),
       estudianteEmail: normalizeEmail(estudiante?.email),
       errEst: errEst ? (errEst.message || String(errEst)) : null,
-      errProf: errProf ? (errProf.message || String(errProf)) : null
+      errProf: errProf ? (errProf.message || String(errProf)) : null,
     });
   }
 
@@ -334,14 +355,21 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
   // 5) Enviar (secuencial para logs claros)
   try {
     if (!adminEmail) throw new Error('ADMIN_EMAIL/ADMINEMAIL no configurado.');
+
     const sent = await sendCompraClasePersonalizadaAdminEmail({
       adminEmail,
       compraId: compra.id,
       montoTotal: compra.monto_total,
       profesor,
-      estudiante
+      estudiante,
     });
-    result.admin = { ok: true, error: null, to: sent.to, resendId: sent.resendId };
+
+    result.admin = {
+      ok: true,
+      error: null,
+      to: sent?.to ?? adminEmail,
+      resendId: sent?.resendId ?? null,
+    };
   } catch (e) {
     result.admin.error = e?.message || String(e);
     result.admin.to = adminEmail;
@@ -359,9 +387,15 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
       fechaHoraIso,
       duracionHoras,
       profesorTimeZone: profesorTZ,
-      estudiante
+      estudiante,
     });
-    result.profesor = { ok: true, error: null, to: sent.to, resendId: sent.resendId };
+
+    result.profesor = {
+      ok: true,
+      error: null,
+      to: sent?.to ?? profesorEmail,
+      resendId: sent?.resendId ?? null,
+    };
   } catch (e) {
     result.profesor.error = e?.message || String(e);
     result.profesor.to = normalizeEmail(profesor?.email);
@@ -377,17 +411,21 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
       compraId: compra.id,
       profesor,
       fechaHoraIso,
-      estudianteTimeZone: estudianteTZ
+      estudianteTimeZone: estudianteTZ,
     });
-    result.estudiante = { ok: true, error: null, to: sent.to, resendId: sent.resendId };
+
+    result.estudiante = {
+      ok: true,
+      error: null,
+      to: sent?.to ?? estudianteEmail,
+      resendId: sent?.resendId ?? null,
+    };
   } catch (e) {
     result.estudiante.error = e?.message || String(e);
     result.estudiante.to = normalizeEmail(estudiante?.email);
     console.error('❌ notify: fallo estudiante', { sesionId, error: result.estudiante.error });
   }
 
-  // Log final siempre
   console.log('✅ notifyClasePersonalizadaAfterSessionCreated final', { sesionId, result });
-
   return result;
 };
