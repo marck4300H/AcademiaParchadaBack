@@ -20,6 +20,78 @@ import {
 
 dotenv.config();
 
+// =====================================================
+// ✅ FUNCIÓN DEFINITIVA: notifica a admin/profesor/estudiante
+// Se llama justo después de crear sesion_clase.
+// =====================================================
+const notificarCompraClasePersonalizada = async ({
+  compra,
+  sesionCreada,
+  profesorId
+}) => {
+  const metaEmail = compra?.mp_raw?.metadata || {};
+
+  const { data: estudiante } = await supabase
+    .from('usuario')
+    .select('id,nombre,apellido,email,telefono,timezone')
+    .eq('id', compra.estudiante_id)
+    .single();
+
+  const { data: profesor } = await supabase
+    .from('usuario')
+    .select('id,nombre,apellido,email,timezone')
+    .eq('id', profesorId)
+    .single();
+
+  const adminEmail = await getAdminEmail(); // usa process.env.ADMIN_EMAIL si existe [file:365]
+
+  const noop = Promise.resolve(null);
+
+  const tasks = [
+    // Admin
+    adminEmail
+      ? sendCompraClasePersonalizadaAdminEmail({
+          adminEmail,
+          compraId: compra.id,
+          montoTotal: compra.monto_total,
+          profesor,
+          estudiante
+        })
+      : noop,
+
+    // Profesor
+    profesor?.email
+      ? sendCompraClasePersonalizadaProfesorEmail({
+          profesorEmail: profesor.email,
+          compraId: compra.id,
+          asignaturaNombre: metaEmail?.asignatura_nombre || 'Clase personalizada',
+          fechaHoraIso: metaEmail?.fecha_hora || sesionCreada?.fecha_hora,
+          duracionHoras: metaEmail?.duracion_horas || null,
+          profesorTimeZone: metaEmail?.profesor_timezone || profesor?.timezone || null,
+          estudiante
+        })
+      : noop,
+
+    // Estudiante
+    estudiante?.email
+      ? sendCompraClasePersonalizadaEstudianteEmail({
+          estudianteEmail: estudiante.email,
+          compraId: compra.id,
+          profesor,
+          fechaHoraIso: metaEmail?.fecha_hora || sesionCreada?.fecha_hora
+        })
+      : noop
+  ];
+
+  const results = await Promise.allSettled(tasks);
+
+  results.forEach((r) => {
+    if (r.status === 'rejected') {
+      console.error('❌ Error enviando correo (clase_personalizada):', r.reason);
+    }
+  });
+};
+
 export const crearCheckoutMercadoPago = async (req, res) => {
   try {
     const {
@@ -400,65 +472,11 @@ export const webhookMercadoPago = async (req, res) => {
           return res.status(200).send('OK');
         }
 
-        const { data: estudiante } = await supabase
-          .from('usuario')
-          .select('id,nombre,apellido,email,telefono,timezone')
-          .eq('id', compra.estudiante_id)
-          .single();
-
-        const { data: profesor } = await supabase
-          .from('usuario')
-          .select('id,nombre,apellido,email,timezone')
-          .eq('id', profesorId)
-          .single();
-
-        const adminEmail = await getAdminEmail(); // lee ADMIN_EMAIL env si existe [file:363]
-        const metaEmail = compra?.mp_raw?.metadata || {};
-
-        // =====================================================
-        // FIX FINAL: enviar admin+profesor+estudiante en paralelo
-        // (3 promesas SIEMPRE, sin condicionales que rompan flujo)
-        // =====================================================
-        const noop = Promise.resolve(null);
-
-        const tasks = [
-          adminEmail
-            ? sendCompraClasePersonalizadaAdminEmail({
-                adminEmail,
-                compraId: compra.id,
-                montoTotal: compra.monto_total,
-                profesor,
-                estudiante
-              })
-            : noop,
-
-          profesor?.email
-            ? sendCompraClasePersonalizadaProfesorEmail({
-                profesorEmail: profesor.email,
-                compraId: compra.id,
-                asignaturaNombre: metaEmail?.asignatura_nombre || 'Clase personalizada',
-                fechaHoraIso: metaEmail?.fecha_hora || sesionCreada?.fecha_hora,
-                duracionHoras: metaEmail?.duracion_horas || null,
-                profesorTimeZone: metaEmail?.profesor_timezone || profesor?.timezone || null,
-                estudiante
-              })
-            : noop,
-
-          estudiante?.email
-            ? sendCompraClasePersonalizadaEstudianteEmail({
-                estudianteEmail: estudiante.email,
-                compraId: compra.id,
-                profesor,
-                fechaHoraIso: metaEmail?.fecha_hora || sesionCreada?.fecha_hora
-              })
-            : noop
-        ];
-
-        const results = await Promise.allSettled(tasks);
-        results.forEach((r) => {
-          if (r.status === 'rejected') {
-            console.error('❌ Error enviando correo (clase_personalizada):', r.reason);
-          }
+        // ✅ Aquí es donde se notifica a los 3 (después de crear sesión)
+        await notificarCompraClasePersonalizada({
+          compra,
+          sesionCreada,
+          profesorId
         });
 
         return res.status(200).send('OK');
