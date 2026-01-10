@@ -7,7 +7,9 @@ import { DateTime } from 'luxon';
 const DEFAULT_TZ = 'America/Bogota';
 
 export const getAdminEmail = async () => {
+  // ✅ Soporta ambos nombres por si en prod lo tienes distinto
   if (process.env.ADMIN_EMAIL) return process.env.ADMIN_EMAIL;
+  if (process.env.ADMINEMAIL) return process.env.ADMINEMAIL;
 
   const { data, error } = await supabase
     .from('usuario')
@@ -30,7 +32,7 @@ const formatDateTimeInTZ = (isoString, timeZone) => {
     const tz = timeZone || DEFAULT_TZ;
     const dt = DateTime.fromISO(isoString, { zone: 'utc' }).setZone(tz);
     if (!dt.isValid) return isoString;
-    return dt.toFormat("dd/MM/yyyy HH:mm") + ` (${tz})`;
+    return dt.toFormat('dd/MM/yyyy HH:mm') + ` (${tz})`;
   } catch {
     return isoString;
   }
@@ -139,8 +141,8 @@ export const sendCompraCursoAdminEmail = async ({ adminEmail, compraId, montoTot
           <h3>Datos del estudiante</h3>
           <p><strong>Nombre:</strong> ${safe(estudiante?.nombre)} ${safe(estudiante?.apellido)}</p>
           <p><strong>Email:</strong> ${safe(estudiante?.email)}</p>
-          <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
           <p><strong>Timezone:</strong> ${safe(estudiante?.timezone)}</p>
+          <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
         </div>
       `
     });
@@ -167,8 +169,8 @@ export const sendCompraCursoProfesorEmail = async ({ profesorEmail, cursoNombre,
           <h3>Datos del estudiante</h3>
           <p><strong>Nombre:</strong> ${safe(estudiante?.nombre)} ${safe(estudiante?.apellido)}</p>
           <p><strong>Email:</strong> ${safe(estudiante?.email)}</p>
-          <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
           <p><strong>Timezone:</strong> ${safe(estudiante?.timezone)}</p>
+          <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
         </div>
       `
     });
@@ -189,7 +191,7 @@ export const sendCompraCursoEstudianteEmail = async ({ estudianteEmail, compraId
         <div style="font-family:Arial;line-height:1.6">
           <h2>Compra exitosa ✅</h2>
           <p><strong>ID de tu compra:</strong> ${safe(compraId)}</p>
-          <p>Gracias por adquirir tu curso pregrabado en Parche Académico 🙌</p>
+          <p>Tu compra fue confirmada.</p>
           <p><strong>Curso:</strong> ${safe(cursoNombre)}</p>
 
           <hr/>
@@ -228,8 +230,8 @@ export const sendCompraClasePersonalizadaAdminEmail = async ({ adminEmail, compr
           <h3>Datos del estudiante</h3>
           <p><strong>Nombre:</strong> ${safe(estudiante?.nombre)} ${safe(estudiante?.apellido)}</p>
           <p><strong>Email:</strong> ${safe(estudiante?.email)}</p>
-          <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
           <p><strong>Timezone:</strong> ${safe(estudiante?.timezone)}</p>
+          <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
         </div>
       `
     });
@@ -238,7 +240,6 @@ export const sendCompraClasePersonalizadaAdminEmail = async ({ adminEmail, compr
   }
 };
 
-// AQUÍ: se agrega duración
 export const sendCompraClasePersonalizadaProfesorEmail = async ({
   profesorEmail,
   compraId,
@@ -270,8 +271,8 @@ export const sendCompraClasePersonalizadaProfesorEmail = async ({
           <h3>Datos del estudiante</h3>
           <p><strong>Nombre:</strong> ${safe(estudiante?.nombre)} ${safe(estudiante?.apellido)}</p>
           <p><strong>Email:</strong> ${safe(estudiante?.email)}</p>
-          <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
           <p><strong>Timezone:</strong> ${safe(estudiante?.timezone)}</p>
+          <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
         </div>
       `
     });
@@ -280,7 +281,7 @@ export const sendCompraClasePersonalizadaProfesorEmail = async ({
   }
 };
 
-export const sendCompraClasePersonalizadaEstudianteEmail = async ({ estudianteEmail, compraId, profesor, fechaHoraIso }) => {
+export const sendCompraClasePersonalizadaEstudianteEmail = async ({ estudianteEmail, compraId, profesor }) => {
   try {
     if (!estudianteEmail) return;
 
@@ -292,8 +293,7 @@ export const sendCompraClasePersonalizadaEstudianteEmail = async ({ estudianteEm
         <div style="font-family:Arial;line-height:1.6">
           <h2>Compra exitosa ✅</h2>
           <p><strong>ID de tu compra:</strong> ${safe(compraId)}</p>
-
-          <p>Tu clase personalizada en Parche Académico ya está lista 😎</p>
+          <p>Tu compra fue confirmada.</p>
           <p>Pronto será enviado tu link de Meet para dicha clase.</p>
 
           <hr/>
@@ -307,5 +307,59 @@ export const sendCompraClasePersonalizadaEstudianteEmail = async ({ estudianteEm
     });
   } catch (err) {
     console.error('Error sendCompraClasePersonalizadaEstudianteEmail:', err);
+  }
+};
+
+// ================================
+// 10-11) Correos PAQUETE DE HORAS
+// ================================
+export const sendCompraPaqueteHorasAdminEmail = async ({ adminEmail, compraId, montoTotal, horasCompradas, estudiante }) => {
+  try {
+    if (!adminEmail) return;
+
+    await resend.emails.send({
+      from: EMAIL_FROM,
+      to: adminEmail,
+      subject: `Compra paquete de horas confirmada #${safe(compraId)}`,
+      html: `
+        <div style="font-family:Arial;line-height:1.6">
+          <h2>Nueva compra de paquete de horas ✅</h2>
+          <p><strong>Compra ID:</strong> ${safe(compraId)}</p>
+          <p><strong>Horas compradas:</strong> ${safe(horasCompradas)}</p>
+          <p><strong>Monto:</strong> ${safe(montoTotal)} COP</p>
+
+          <hr/>
+          <h3>Datos del estudiante</h3>
+          <p><strong>Nombre:</strong> ${safe(estudiante?.nombre)} ${safe(estudiante?.apellido)}</p>
+          <p><strong>Email:</strong> ${safe(estudiante?.email)}</p>
+          <p><strong>Timezone:</strong> ${safe(estudiante?.timezone)}</p>
+          <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
+        </div>
+      `
+    });
+  } catch (err) {
+    console.error('Error sendCompraPaqueteHorasAdminEmail:', err);
+  }
+};
+
+export const sendCompraPaqueteHorasEstudianteEmail = async ({ estudianteEmail, compraId, horasCompradas }) => {
+  try {
+    if (!estudianteEmail) return;
+
+    await resend.emails.send({
+      from: EMAIL_FROM,
+      to: estudianteEmail,
+      subject: 'Tu compra de paquete de horas fue exitosa - Parche Académico',
+      html: `
+        <div style="font-family:Arial;line-height:1.6">
+          <h2>Compra exitosa ✅</h2>
+          <p><strong>ID de tu compra:</strong> ${safe(compraId)}</p>
+          <p><strong>Horas compradas:</strong> ${safe(horasCompradas)}</p>
+          <p>Parche Académico</p>
+        </div>
+      `
+    });
+  } catch (err) {
+    console.error('Error sendCompraPaqueteHorasEstudianteEmail:', err);
   }
 };
