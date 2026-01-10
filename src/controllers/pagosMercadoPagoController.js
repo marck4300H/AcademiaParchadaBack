@@ -110,7 +110,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
       const { data: curso, error } = await supabase
         .from('curso')
-        .select('id,nombre,precio')
+        .select('id,nombre,precio,profesor_id')
         .eq('id', curso_id)
         .single();
 
@@ -157,19 +157,20 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         });
       }
 
-      titulo = `Clase personalizada`;
+      titulo = 'Clase personalizada';
       monto_total = Number(clase.precio);
 
       metadata = {
         ...metadata,
         clase_personalizada_id: clase.id,
-        // Guardamos lo que el cliente envió (para trazabilidad)
+
+        // trazabilidad
         fecha_hora: String(fecha_hora),
         estudiante_timezone: estudianteTimeZone,
         descripcion_estudiante: descripcion_estudiante || null,
         documento_url: documento_url || null,
 
-        // Pre-asignación definitiva (evita recalcular en webhook)
+        // pre-asignación definitiva
         profesor_id: asignacion.profesor?.id || null,
         franja_horaria_ids: asignacion.franjasUtilizadas || [],
         profesor_timezone: asignacion.profesorTimeZone || null,
@@ -282,7 +283,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
   }
 };
 
-// WEBHOOK: corrección mínima -> SI pago completado, crear sesion_clase usando metadata (sin reasignar)
+// WEBHOOK: cuando queda completado -> crear sesion_clase y notificar a los 3
 export const webhookMercadoPago = async (req, res) => {
   try {
     const topic = req.query.topic || req.body?.type || req.body?.topic;
@@ -348,41 +349,36 @@ export const webhookMercadoPago = async (req, res) => {
         })
         .eq('id', external_reference);
 
-      // ===== CORRECCIÓN: antes retornaba aquí y nunca creaba la sesión =====
       if (nuevoEstado !== 'completado') return res.status(200).send('OK');
 
-      // Traer compra (para saber si es clase_personalizada) + metadata
+      // Traer compra ya actualizada
       const { data: compra, error: errCompra } = await supabase
         .from('compra')
-        .select('id, tipo_compra, estudiante_id, curso_id, clase_personalizada_id, monto_total, mp_raw')
+        .select('id,tipo_compra,estudiante_id,curso_id,clase_personalizada_id,monto_total,mp_raw')
         .eq('id', external_reference)
         .single();
 
       if (errCompra || !compra?.id) return res.status(200).send('OK');
 
-      // ======= SOLO si es clase_personalizada: crear sesion_clase =======
+      // ======= CLASE PERSONALIZADA: crear sesion_clase y notificar =======
       if (compra.tipo_compra === 'clase_personalizada' && compra.clase_personalizada_id) {
-        // Idempotencia: si ya existe sesión para la compra, no duplicar
+        // Idempotencia
         const { data: sesionExist } = await supabase
           .from('sesion_clase')
           .select('id')
           .eq('compra_id', compra.id)
           .maybeSingle();
 
-        if (sesionExist?.id) {
-          return res.status(200).send('OK');
-        }
+        if (sesionExist?.id) return res.status(200).send('OK');
 
         const meta = compra?.mp_raw?.metadata || {};
 
-        // OJO: en tu checkout nuevo guardas claves snake_case:
         const fechaHora = meta?.fecha_hora || null;
         const profesorId = meta?.profesor_id || null;
         const franjaIds = meta?.franja_horaria_ids || [];
         const descripcionEst = meta?.descripcion_estudiante || null;
         const documentoUrl = meta?.documento_url || null;
 
-        // Si falta metadata crítica, no reasignar en webhook (para no romper lo que ya funciona)
         if (!fechaHora || !profesorId || !Array.isArray(franjaIds) || franjaIds.length === 0) {
           console.error('❌ metadata incompleta para crear sesion_clase', {
             compraId: compra.id,
@@ -413,7 +409,7 @@ export const webhookMercadoPago = async (req, res) => {
           return res.status(200).send('OK');
         }
 
-        // Emails (sin tocar tu flujo actual: usa las funciones ya existentes)
+        // Datos para templates
         const { data: estudiante } = await supabase
           .from('usuario')
           .select('id,nombre,apellido,email')
@@ -428,7 +424,7 @@ export const webhookMercadoPago = async (req, res) => {
 
         const adminEmail = await getAdminEmail();
 
-        // Admin
+        // Notificaciones: admin, profesor, estudiante
         if (adminEmail) {
           await sendCompraClasePersonalizadaAdminEmail({
             to: adminEmail,
@@ -439,7 +435,6 @@ export const webhookMercadoPago = async (req, res) => {
           });
         }
 
-        // Profesor
         if (profesor?.email) {
           await sendCompraClasePersonalizadaProfesorEmail({
             to: profesor.email,
@@ -450,7 +445,6 @@ export const webhookMercadoPago = async (req, res) => {
           });
         }
 
-        // Estudiante
         if (estudiante?.email) {
           await sendCompraClasePersonalizadaEstudianteEmail({
             to: estudiante.email,
@@ -460,6 +454,20 @@ export const webhookMercadoPago = async (req, res) => {
             sesion: sesionCreada
           });
         }
+
+        return res.status(200).send('OK');
+      }
+
+      // ======= CURSO: (no lo toco; pero si quieres aquí van tus 3 correos) =======
+      if (compra.tipo_compra === 'curso' && compra.curso_id) {
+        // Si tu flujo actual envía correos en curso desde otro lado, no tocar.
+        // Si quieres que también lo haga el webhook, dime y lo ajustamos.
+        return res.status(200).send('OK');
+      }
+
+      // ======= PAQUETE HORAS: (no lo toco) =======
+      if (compra.tipo_compra === 'paquete_horas') {
+        return res.status(200).send('OK');
       }
 
       return res.status(200).send('OK');
