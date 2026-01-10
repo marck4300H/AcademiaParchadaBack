@@ -1,5 +1,8 @@
 // src/controllers/authController.js
+
 import bcrypt from 'bcryptjs';
+import { DateTime } from 'luxon';
+
 import { supabase } from '../config/supabase.js';
 import { generateToken } from '../utils/jwt.js';
 import { sendWelcomeEmail } from '../services/emailService.js';
@@ -11,7 +14,16 @@ import { sendWelcomeEmail } from '../services/emailService.js';
  */
 export const register = async (req, res) => {
   try {
-    const { email, password, nombre, apellido, telefono } = req.body;
+    const { email, password, nombre, apellido, telefono, timezone } = req.body;
+
+    // Validar timezone (por seguridad, además del validator)
+    const tz = timezone || 'America/Bogota';
+    if (!DateTime.now().setZone(tz).isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Timezone inválido (debe ser IANA, ej: America/Bogota)',
+      });
+    }
 
     // 1. Verificar si el usuario ya existe
     const { data: existingUser } = await supabase
@@ -23,7 +35,7 @@ export const register = async (req, res) => {
     if (existingUser) {
       return res.status(400).json({
         success: false,
-        message: 'El email ya está registrado'
+        message: 'El email ya está registrado',
       });
     }
 
@@ -41,8 +53,9 @@ export const register = async (req, res) => {
           nombre,
           apellido,
           telefono: telefono || null,
-          rol: 'estudiante'
-        }
+          rol: 'estudiante',
+          timezone: tz,
+        },
       ])
       .select()
       .single();
@@ -52,7 +65,7 @@ export const register = async (req, res) => {
       return res.status(500).json({
         success: false,
         message: 'Error al crear el usuario',
-        error: insertError.message
+        error: insertError.message,
       });
     }
 
@@ -60,14 +73,14 @@ export const register = async (req, res) => {
     const token = generateToken({
       id: newUser.id,
       email: newUser.email,
-      rol: newUser.rol
+      rol: newUser.rol,
     });
 
     // 5. Email bienvenida (no bloquea)
     await sendWelcomeEmail({ to: email, nombre });
 
     // 6. Respuesta exitosa
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Usuario registrado exitosamente',
       data: {
@@ -77,18 +90,18 @@ export const register = async (req, res) => {
           nombre: newUser.nombre,
           apellido: newUser.apellido,
           telefono: newUser.telefono,
-          rol: newUser.rol
+          rol: newUser.rol,
+          timezone: newUser.timezone,
         },
-        token
-      }
+        token,
+      },
     });
-
   } catch (error) {
     console.error('Error en registro:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -110,7 +123,7 @@ export const login = async (req, res) => {
     if (findError || !user) {
       return res.status(401).json({
         success: false,
-        message: 'Credenciales inválidas'
+        message: 'Credenciales inválidas',
       });
     }
 
@@ -119,17 +132,17 @@ export const login = async (req, res) => {
     if (!isPasswordValid) {
       return res.status(401).json({
         success: false,
-        message: 'Credenciales inválidas'
+        message: 'Credenciales inválidas',
       });
     }
 
     const token = generateToken({
       id: user.id,
       email: user.email,
-      rol: user.rol
+      rol: user.rol,
     });
 
-    res.json({
+    return res.json({
       success: true,
       message: 'Inicio de sesión exitoso',
       data: {
@@ -139,18 +152,18 @@ export const login = async (req, res) => {
           nombre: user.nombre,
           apellido: user.apellido,
           telefono: user.telefono,
-          rol: user.rol
+          rol: user.rol,
+          timezone: user.timezone || 'America/Bogota',
         },
-        token
-      }
+        token,
+      },
     });
-
   } catch (error) {
     console.error('Error en login:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -161,16 +174,16 @@ export const login = async (req, res) => {
  */
 export const logout = async (req, res) => {
   try {
-    res.json({
+    return res.json({
       success: true,
-      message: 'Sesión cerrada exitosamente'
+      message: 'Sesión cerrada exitosamente',
     });
   } catch (error) {
     console.error('Error en logout:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error al cerrar sesión',
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -182,28 +195,27 @@ export const getMe = async (req, res) => {
   try {
     const { data: user, error } = await supabase
       .from('usuario')
-      .select('id, email, nombre, apellido, telefono, rol, created_at')
+      .select('id, email, nombre, apellido, telefono, rol, timezone, created_at')
       .eq('id', req.user.id)
       .single();
 
     if (error || !user) {
       return res.status(404).json({
         success: false,
-        message: 'Usuario no encontrado'
+        message: 'Usuario no encontrado',
       });
     }
 
-    res.json({
+    return res.json({
       success: true,
-      data: { user }
+      data: { user },
     });
-
   } catch (error) {
     console.error('Error al obtener usuario:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
-      error: error.message
+      error: error.message,
     });
   }
 };
