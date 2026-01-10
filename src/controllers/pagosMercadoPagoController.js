@@ -125,6 +125,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       if (!clase_personalizada_id) {
         return res.status(400).json({ success: false, message: 'clase_personalizada_id es requerido' });
       }
+
       if (!fecha_hora) {
         return res.status(400).json({ success: false, message: 'fecha_hora es requerida para clase_personalizada' });
       }
@@ -143,7 +144,6 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
       if (error || !clase) return res.status(404).json({ success: false, message: 'Clase personalizada no encontrada' });
 
-      // Validación usando timezones (estudiante->profesor)
       const asignacion = await asignarProfesorOptimo(
         clase.asignatura_id,
         String(fecha_hora),
@@ -165,13 +165,11 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         ...metadata,
         clase_personalizada_id: clase.id,
 
-        // trazabilidad
         fecha_hora: String(fecha_hora),
         estudiante_timezone: estudianteTimeZone,
         descripcion_estudiante: descripcion_estudiante || null,
         documento_url: documento_url || null,
 
-        // pre-asignación definitiva
         profesor_id: asignacion.profesor?.id || null,
         franja_horaria_ids: asignacion.franjasUtilizadas || [],
         profesor_timezone: asignacion.profesorTimeZone || null,
@@ -185,6 +183,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       if (!clase_personalizada_id) {
         return res.status(400).json({ success: false, message: 'clase_personalizada_id es requerido' });
       }
+
       if (!cantidad_horas || Number(cantidad_horas) <= 0) {
         return res.status(400).json({ success: false, message: 'cantidad_horas debe ser > 0' });
       }
@@ -284,7 +283,6 @@ export const crearCheckoutMercadoPago = async (req, res) => {
   }
 };
 
-// WEBHOOK: cuando queda completado -> crear sesion_clase y notificar a los 3
 export const webhookMercadoPago = async (req, res) => {
   try {
     const topic = req.query.topic || req.body?.type || req.body?.topic;
@@ -352,7 +350,6 @@ export const webhookMercadoPago = async (req, res) => {
 
       if (nuevoEstado !== 'completado') return res.status(200).send('OK');
 
-      // Traer compra ya actualizada
       const { data: compra, error: errCompra } = await supabase
         .from('compra')
         .select('id,tipo_compra,estudiante_id,curso_id,clase_personalizada_id,monto_total,mp_raw,moneda')
@@ -361,9 +358,8 @@ export const webhookMercadoPago = async (req, res) => {
 
       if (errCompra || !compra?.id) return res.status(200).send('OK');
 
-      // ======= CLASE PERSONALIZADA: crear sesion_clase y notificar =======
+      // ======= CLASE PERSONALIZADA =======
       if (compra.tipo_compra === 'clase_personalizada' && compra.clase_personalizada_id) {
-        // Idempotencia
         const { data: sesionExist } = await supabase
           .from('sesion_clase')
           .select('id')
@@ -373,7 +369,6 @@ export const webhookMercadoPago = async (req, res) => {
         if (sesionExist?.id) return res.status(200).send('OK');
 
         const meta = compra?.mp_raw?.metadata || {};
-
         const fechaHora = meta?.fecha_hora || null;
         const profesorId = meta?.profesor_id || null;
         const franjaIds = meta?.franja_horaria_ids || [];
@@ -410,7 +405,7 @@ export const webhookMercadoPago = async (req, res) => {
           return res.status(200).send('OK');
         }
 
-        // Datos para templates
+        // Datos para emails
         const { data: estudiante } = await supabase
           .from('usuario')
           .select('id,nombre,apellido,email,telefono,timezone')
@@ -424,9 +419,8 @@ export const webhookMercadoPago = async (req, res) => {
           .single();
 
         const adminEmail = await getAdminEmail();
-
-        // ======= Envío de correos (admin, profesor, estudiante) robusto =======
         const metaEmail = compra?.mp_raw?.metadata || {};
+
         const tasks = [];
 
         if (adminEmail) {
@@ -455,7 +449,7 @@ export const webhookMercadoPago = async (req, res) => {
           );
         }
 
-        // >>>>> FIX: asegurar envío al estudiante + log si email es null <<<<<
+        // ✅ ESTE ES EL FIX REAL: fuera de cualquier else raro y SIEMPRE se evalúa
         if (estudiante?.email) {
           tasks.push(
             sendCompraClasePersonalizadaEstudianteEmail({
@@ -466,12 +460,13 @@ export const webhookMercadoPago = async (req, res) => {
             })
           );
         } else {
-          console.error('❌ No se pudo notificar al estudiante: estudiante.email viene null', {
+          console.error('❌ estudiante.email null (no debería):', {
             compraId: compra.id,
             estudianteId: compra.estudiante_id
           });
         }
 
+        // ✅ SIEMPRE se ejecuta
         const results = await Promise.allSettled(tasks);
         results.forEach((r) => {
           if (r.status === 'rejected') {
@@ -482,14 +477,9 @@ export const webhookMercadoPago = async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      // ======= CURSO / PAQUETE HORAS: no se toca aquí =======
-      if (compra.tipo_compra === 'curso' && compra.curso_id) {
-        return res.status(200).send('OK');
-      }
-
-      if (compra.tipo_compra === 'paquete_horas') {
-        return res.status(200).send('OK');
-      }
+      // ======= CURSO / PAQUETE HORAS (no se toca) =======
+      if (compra.tipo_compra === 'curso' && compra.curso_id) return res.status(200).send('OK');
+      if (compra.tipo_compra === 'paquete_horas') return res.status(200).send('OK');
 
       return res.status(200).send('OK');
     }
