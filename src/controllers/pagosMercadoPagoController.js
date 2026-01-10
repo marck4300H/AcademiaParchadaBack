@@ -4,28 +4,29 @@ import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 
 import { supabase } from '../config/supabase.js';
-import { mpPreference, mpPayment, mpMerchantOrder } from '../config/mercadopago.js';
+import { mpPreference, mpPayment } from '../config/mercadopago.js';
 
 import { asignarProfesorOptimo } from '../utils/asignarProfesor.js';
 
 import {
   getAdminEmail,
+
   sendCompraCursoAdminEmail,
   sendCompraCursoProfesorEmail,
   sendCompraCursoEstudianteEmail,
+
   sendCompraClasePersonalizadaAdminEmail,
   sendCompraClasePersonalizadaProfesorEmail,
-  sendCompraClasePersonalizadaEstudianteEmail
+  sendCompraClasePersonalizadaEstudianteEmail,
+
+  sendCompraPaqueteHorasAdminEmail,
+  sendCompraPaqueteHorasEstudianteEmail
 } from '../services/emailService.js';
 
 dotenv.config();
 
-/**
- * Extrae el id del webhook de MercadoPago de forma segura.
- * Tus ejemplos llegan así:
- * - body.resource: "141502985702" (payment) o URL (merchant_order)
- * - query.id: "141502985702" o "37191638244"
- */
+const DEFAULT_TZ = 'America/Bogota';
+
 const extractMercadoPagoId = (req) => {
   const raw =
     req.query?.id ||
@@ -33,12 +34,11 @@ const extractMercadoPagoId = (req) => {
     req.body?.data?.id ||
     req.body?.id ||
     req.body?.resource ||
-    req.body?.body?.resource || // por si en BD guardas "body": {resource: ...}
+    req.body?.body?.resource ||
     req.body?.body?.id;
 
   if (!raw) return null;
 
-  // si viene como URL -> tomar último segmento numérico
   if (typeof raw === 'string') {
     const trimmed = raw.trim();
     if (trimmed.startsWith('http')) {
@@ -47,10 +47,8 @@ const extractMercadoPagoId = (req) => {
     return trimmed;
   }
 
-  // si viene como número
   if (typeof raw === 'number') return String(raw);
 
-  // si viene como objeto (raro), intentar campos comunes
   if (typeof raw === 'object') {
     const candidate = raw.id || raw.data?.id || raw.resource;
     if (!candidate) return null;
@@ -64,6 +62,7 @@ const extractMercadoPagoId = (req) => {
 };
 
 const isNumericId = (value) => /^\d+$/.test(String(value || '').trim());
+const noop = Promise.resolve(null);
 
 const notificarCompraClasePersonalizada = async ({ compra, sesionCreada, profesorId }) => {
   const metaEmail = compra?.mp_raw?.metadata || {};
@@ -80,9 +79,7 @@ const notificarCompraClasePersonalizada = async ({ compra, sesionCreada, profeso
     .eq('id', profesorId)
     .single();
 
-  const adminEmail = await getAdminEmail(); // env ADMIN_EMAIL o rol administrador [file:365]
-
-  const noop = Promise.resolve(null);
+  const adminEmail = await getAdminEmail();
 
   const tasks = [
     adminEmail
@@ -102,7 +99,7 @@ const notificarCompraClasePersonalizada = async ({ compra, sesionCreada, profeso
           asignaturaNombre: metaEmail?.asignatura_nombre || 'Clase personalizada',
           fechaHoraIso: metaEmail?.fecha_hora || sesionCreada?.fecha_hora,
           duracionHoras: metaEmail?.duracion_horas || null,
-          profesorTimeZone: metaEmail?.profesor_timezone || profesor?.timezone || null,
+          profesorTimeZone: metaEmail?.profesor_timezone || profesor?.timezone || DEFAULT_TZ,
           estudiante
         })
       : noop,
@@ -111,23 +108,99 @@ const notificarCompraClasePersonalizada = async ({ compra, sesionCreada, profeso
       ? sendCompraClasePersonalizadaEstudianteEmail({
           estudianteEmail: estudiante.email,
           compraId: compra.id,
-          profesor,
-          fechaHoraIso: metaEmail?.fecha_hora || sesionCreada?.fecha_hora
+          profesor
         })
       : noop
   ];
 
   const results = await Promise.allSettled(tasks);
-
   results.forEach((r) => {
-    if (r.status === 'rejected') {
-      console.error('❌ Error enviando correo (clase_personalizada):', r.reason);
-    }
+    if (r.status === 'rejected') console.error('❌ Error enviando correo (clase_personalizada):', r.reason);
   });
 
-  // Debug útil para tu caso: saber si adminEmail fue null
   if (!adminEmail) {
-    console.error('⚠️ Admin email no resuelto (ADMIN_EMAIL/BD). No se envió correo a admin.', {
+    console.error('⚠️ Admin email no resuelto (ADMIN_EMAIL/ADMINEMAIL/BD). No se envió correo a admin.', {
+      compraId: compra?.id
+    });
+  }
+};
+
+const notificarCompraCurso = async ({ compra, estudiante, curso, profesor }) => {
+  const adminEmail = await getAdminEmail();
+
+  const tasks = [
+    adminEmail
+      ? sendCompraCursoAdminEmail({
+          adminEmail,
+          compraId: compra.id,
+          montoTotal: compra.monto_total,
+          cursoNombre: curso?.nombre,
+          profesor,
+          estudiante
+        })
+      : noop,
+
+    profesor?.email
+      ? sendCompraCursoProfesorEmail({
+          profesorEmail: profesor.email,
+          cursoNombre: curso?.nombre,
+          compraId: compra.id,
+          estudiante
+        })
+      : noop,
+
+    estudiante?.email
+      ? sendCompraCursoEstudianteEmail({
+          estudianteEmail: estudiante.email,
+          compraId: compra.id,
+          profesor,
+          cursoNombre: curso?.nombre
+        })
+      : noop
+  ];
+
+  const results = await Promise.allSettled(tasks);
+  results.forEach((r) => {
+    if (r.status === 'rejected') console.error('❌ Error enviando correo (curso):', r.reason);
+  });
+
+  if (!adminEmail) {
+    console.error('⚠️ Admin email no resuelto (ADMIN_EMAIL/ADMINEMAIL/BD). No se envió correo a admin.', {
+      compraId: compra?.id
+    });
+  }
+};
+
+const notificarCompraPaqueteHoras = async ({ compra, estudiante, horasCompradas }) => {
+  const adminEmail = await getAdminEmail();
+
+  const tasks = [
+    adminEmail
+      ? sendCompraPaqueteHorasAdminEmail({
+          adminEmail,
+          compraId: compra.id,
+          montoTotal: compra.monto_total,
+          horasCompradas,
+          estudiante
+        })
+      : noop,
+
+    estudiante?.email
+      ? sendCompraPaqueteHorasEstudianteEmail({
+          estudianteEmail: estudiante.email,
+          compraId: compra.id,
+          horasCompradas
+        })
+      : noop
+  ];
+
+  const results = await Promise.allSettled(tasks);
+  results.forEach((r) => {
+    if (r.status === 'rejected') console.error('❌ Error enviando correo (paquete_horas):', r.reason);
+  });
+
+  if (!adminEmail) {
+    console.error('⚠️ Admin email no resuelto (ADMIN_EMAIL/ADMINEMAIL/BD). No se envió correo a admin.', {
       compraId: compra?.id
     });
   }
@@ -142,7 +215,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       cantidad_horas,
       estudiante,
       fecha_hora,
-      estudiante_timezone, // opcional
+      estudiante_timezone,
       descripcion_estudiante,
       documento_url
     } = req.body;
@@ -153,18 +226,11 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
     // 1) Resolver estudiante_id
     let estudiante_id = req.user?.id || null;
-
-    // Si viene por token, se puede tomar timezone del estudiante desde BD
     let estudianteTZFromDB = null;
 
     if (estudiante_id) {
-      const { data: estDB } = await supabase
-        .from('usuario')
-        .select('timezone')
-        .eq('id', estudiante_id)
-        .single();
-
-      estudianteTZFromDB = estDB?.timezone || null;
+      const { data: estDB } = await supabase.from('usuario').select('timezone').eq('id', estudiante_id).single();
+      estudianteTZFromDB = estDB?.timezone || DEFAULT_TZ;
     }
 
     if (!estudiante_id) {
@@ -177,12 +243,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
       const { email, password, nombre, apellido, telefono, timezone } = estudiante;
 
-      const { data: existente } = await supabase
-        .from('usuario')
-        .select('id')
-        .eq('email', email)
-        .single();
-
+      const { data: existente } = await supabase.from('usuario').select('id').eq('email', email).single();
       if (existente?.id) {
         return res.status(400).json({
           success: false,
@@ -201,7 +262,8 @@ export const crearCheckoutMercadoPago = async (req, res) => {
             nombre,
             apellido,
             telefono,
-            timezone: timezone || null,
+            // ✅ timezone en tu BD es NOT NULL
+            timezone: timezone || DEFAULT_TZ,
             password_hash: passwordHash,
             rol: 'estudiante'
           }
@@ -212,10 +274,10 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       if (errNuevo) throw errNuevo;
 
       estudiante_id = nuevoEst.id;
-      estudianteTZFromDB = nuevoEst?.timezone || null;
+      estudianteTZFromDB = nuevoEst?.timezone || DEFAULT_TZ;
     }
 
-    const estudianteTimeZone = estudiante_timezone || estudianteTZFromDB || null;
+    const estudianteTimeZone = estudiante_timezone || estudianteTZFromDB || DEFAULT_TZ;
 
     // 2) Calcular monto_total y metadata
     let titulo = '';
@@ -240,7 +302,6 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       if (!clase_personalizada_id) {
         return res.status(400).json({ success: false, message: 'clase_personalizada_id es requerido' });
       }
-
       if (!fecha_hora) {
         return res.status(400).json({ success: false, message: 'fecha_hora es requerida para clase_personalizada' });
       }
@@ -261,6 +322,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
       if (error || !clase) return res.status(404).json({ success: false, message: 'Clase personalizada no encontrada' });
 
+      // ✅ NO se toca tu validación/asignación de franjas
       const asignacion = await asignarProfesorOptimo(
         clase.asignatura_id,
         String(fecha_hora),
@@ -296,7 +358,6 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       if (!clase_personalizada_id) {
         return res.status(400).json({ success: false, message: 'clase_personalizada_id es requerido' });
       }
-
       if (!cantidad_horas || Number(cantidad_horas) <= 0) {
         return res.status(400).json({ success: false, message: 'cantidad_horas debe ser > 0' });
       }
@@ -313,11 +374,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       titulo = `Paquete de horas (${horas}h)`;
       monto_total = Number(clase.precio) * horas;
 
-      metadata = {
-        ...metadata,
-        clase_personalizada_id: clase.id,
-        cantidad_horas: horas
-      };
+      metadata = { ...metadata, clase_personalizada_id: clase.id, cantidad_horas: horas };
     } else {
       return res.status(400).json({ success: false, message: 'tipo_compra inválido' });
     }
@@ -341,12 +398,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       compraInsert.horas_disponibles = Number(cantidad_horas);
     }
 
-    const { data: compra, error: errCompra } = await supabase
-      .from('compra')
-      .insert([compraInsert])
-      .select()
-      .single();
-
+    const { data: compra, error: errCompra } = await supabase.from('compra').insert([compraInsert]).select().single();
     if (errCompra) throw errCompra;
 
     // 4) Preferencia MP
@@ -423,132 +475,151 @@ export const webhookMercadoPago = async (req, res) => {
       }
     ]);
 
-    // ------------------------
-    // PAYMENT / PAYMENT.UPDATED
-    // ------------------------
-    if (topic === 'payment' || topic === 'payment.updated') {
-      const paymentId = String(id || '').trim();
+    // ✅ Soluciona el “log/error” del 2do webhook: merchant_order se ignora
+    if (topic === 'merchant_order') return res.status(200).send('OK');
 
-      // ✅ Evita el "Invalid Id." que te tumba el webhook completo
-      if (!isNumericId(paymentId)) {
-        console.error('❌ Webhook MP: payment id inválido:', { topic, rawId: id, paymentId });
-        return res.status(200).send('OK');
-      }
+    // ✅ Evita duplicar correos por payment.updated
+    if (topic === 'payment.updated') return res.status(200).send('OK');
 
-      const payment = await mpPayment.get({ id: paymentId });
+    if (topic !== 'payment') return res.status(200).send('OK');
 
-      const external_reference = payment?.external_reference; // compra.id
-      const status = payment?.status;
-      const status_detail = payment?.status_detail;
-      const merchant_order_id = payment?.order?.id ? String(payment.order.id) : null;
-
-      if (!external_reference) return res.status(200).send('OK');
-
-      const nuevoEstado =
-        status === 'approved'
-          ? 'completado'
-          : status === 'rejected' || status === 'cancelled'
-            ? 'fallido'
-            : 'pendiente';
-
-      await supabase
-        .from('compra')
-        .update({
-          estado_pago: nuevoEstado,
-          mp_payment_id: paymentId,
-          mp_merchant_order_id: merchant_order_id,
-          mp_status: status,
-          mp_status_detail: status_detail,
-          mp_raw: payment
-        })
-        .eq('id', external_reference);
-
-      if (nuevoEstado !== 'completado') return res.status(200).send('OK');
-
-      const { data: compra, error: errCompra } = await supabase
-        .from('compra')
-        .select('id,tipo_compra,estudiante_id,curso_id,clase_personalizada_id,monto_total,mp_raw,moneda')
-        .eq('id', external_reference)
-        .single();
-
-      if (errCompra || !compra?.id) return res.status(200).send('OK');
-
-      // ======= CLASE PERSONALIZADA =======
-      if (compra.tipo_compra === 'clase_personalizada' && compra.clase_personalizada_id) {
-        const { data: sesionExist } = await supabase
-          .from('sesion_clase')
-          .select('id')
-          .eq('compra_id', compra.id)
-          .maybeSingle();
-
-        if (sesionExist?.id) return res.status(200).send('OK');
-
-        const meta = compra?.mp_raw?.metadata || {};
-
-        const fechaHora = meta?.fecha_hora || null;
-        const profesorId = meta?.profesor_id || null;
-        const franjaIds = meta?.franja_horaria_ids || [];
-        const descripcionEst = meta?.descripcion_estudiante || null;
-        const documentoUrl = meta?.documento_url || null;
-
-        if (!fechaHora || !profesorId || !Array.isArray(franjaIds) || franjaIds.length === 0) {
-          console.error('❌ metadata incompleta para crear sesion_clase', {
-            compraId: compra.id,
-            fechaHora,
-            profesorId,
-            franjaIds
-          });
-          return res.status(200).send('OK');
-        }
-
-        const { data: sesionCreada, error: sesionError } = await supabase
-          .from('sesion_clase')
-          .insert([
-            {
-              compra_id: compra.id,
-              profesor_id: profesorId,
-              descripcion_estudiante: descripcionEst,
-              documento_url: documentoUrl,
-              fecha_hora: new Date(fechaHora).toISOString(),
-              link_meet: null,
-              estado: 'programada',
-              franja_horaria_ids: franjaIds
-            }
-          ])
-          .select()
-          .single();
-
-        if (sesionError) {
-          console.error('❌ Error creando sesion_clase post-pago:', sesionError);
-          return res.status(200).send('OK');
-        }
-
-        // ✅ Notifica a admin + profesor + estudiante (no depende de merchant_order)
-        await notificarCompraClasePersonalizada({ compra, sesionCreada, profesorId });
-
-        return res.status(200).send('OK');
-      }
-
-      // (aquí puedes implementar curso/paquete luego sin romper el flujo)
-      if (compra.tipo_compra === 'curso' && compra.curso_id) return res.status(200).send('OK');
-      if (compra.tipo_compra === 'paquete_horas') return res.status(200).send('OK');
-
+    const paymentId = String(id || '').trim();
+    if (!isNumericId(paymentId)) {
+      console.error('❌ Webhook MP: payment id inválido:', { topic, rawId: id, paymentId });
       return res.status(200).send('OK');
     }
 
-    // ------------------------
-    // MERCHANT_ORDER
-    // ------------------------
-    if (topic === 'merchant_order') {
-      const orderId = String(id || '').trim();
+    const payment = await mpPayment.get({ id: paymentId });
 
-      // ✅ Evita Invalid Id por URLs raras / ids no numéricos
-      if (!isNumericId(orderId)) {
-        console.error('❌ Webhook MP: merchant_order id inválido:', { topic, rawId: id, orderId });
+    const external_reference = payment?.external_reference; // compra.id
+    const status = payment?.status;
+    const status_detail = payment?.status_detail;
+    const merchant_order_id = payment?.order?.id ? String(payment.order.id) : null;
+
+    if (!external_reference) return res.status(200).send('OK');
+
+    const nuevoEstado =
+      status === 'approved'
+        ? 'completado'
+        : status === 'rejected' || status === 'cancelled'
+          ? 'fallido'
+          : 'pendiente';
+
+    await supabase
+      .from('compra')
+      .update({
+        estado_pago: nuevoEstado,
+        mp_payment_id: paymentId,
+        mp_merchant_order_id: merchant_order_id,
+        mp_status: status,
+        mp_status_detail: status_detail,
+        mp_raw: payment
+      })
+      .eq('id', external_reference);
+
+    if (nuevoEstado !== 'completado') return res.status(200).send('OK');
+
+    const { data: compra, error: errCompra } = await supabase
+      .from('compra')
+      .select('id,tipo_compra,estudiante_id,curso_id,clase_personalizada_id,monto_total,mp_raw,moneda,horas_totales')
+      .eq('id', external_reference)
+      .single();
+
+    if (errCompra || !compra?.id) return res.status(200).send('OK');
+
+    const { data: estudiante } = await supabase
+      .from('usuario')
+      .select('id,nombre,apellido,email,telefono,timezone')
+      .eq('id', compra.estudiante_id)
+      .single();
+
+    // ✅ CURSO: admin + profesor + estudiante
+    if (compra.tipo_compra === 'curso' && compra.curso_id) {
+      const { data: curso } = await supabase.from('curso').select('id,nombre,profesor_id').eq('id', compra.curso_id).single();
+
+      const { data: profesor } = curso?.profesor_id
+        ? await supabase.from('usuario').select('id,nombre,apellido,email').eq('id', curso.profesor_id).single()
+        : { data: null };
+
+      // (recomendado) inscribir si no existe, sin romper si ya existe
+      try {
+        const { data: inscExist } = await supabase
+          .from('inscripcion_curso')
+          .select('id')
+          .eq('estudiante_id', compra.estudiante_id)
+          .eq('curso_id', compra.curso_id)
+          .maybeSingle();
+
+        if (!inscExist?.id) {
+          await supabase.from('inscripcion_curso').insert([
+            { estudiante_id: compra.estudiante_id, curso_id: compra.curso_id, fecha_inscripcion: new Date().toISOString() }
+          ]);
+        }
+      } catch (e) {
+        console.error('⚠️ No se pudo crear/verificar inscripción (se continúa):', e?.message || e);
+      }
+
+      await notificarCompraCurso({ compra, estudiante, curso, profesor });
+      return res.status(200).send('OK');
+    }
+
+    // ✅ CLASE PERSONALIZADA: admin + profesor + estudiante
+    if (compra.tipo_compra === 'clase_personalizada' && compra.clase_personalizada_id) {
+      const { data: sesionExist } = await supabase
+        .from('sesion_clase')
+        .select('id,profesor_id,fecha_hora')
+        .eq('compra_id', compra.id)
+        .maybeSingle();
+
+      if (sesionExist?.id) {
+        await notificarCompraClasePersonalizada({ compra, sesionCreada: sesionExist, profesorId: sesionExist.profesor_id });
         return res.status(200).send('OK');
       }
 
-      await mpMerchantOrder.get({ id: orderId });
+      const meta = compra?.mp_raw?.metadata || {};
+      const fechaHora = meta?.fecha_hora || null;
+      const profesorId = meta?.profesor_id || null;
+      const franjaIds = meta?.franja_horaria_ids || [];
+      const descripcionEst = meta?.descripcion_estudiante || null;
+      const documentoUrl = meta?.documento_url || null;
+
+      if (!fechaHora || !profesorId || !Array.isArray(franjaIds) || franjaIds.length === 0) {
+        console.error('❌ metadata incompleta para crear sesion_clase', { compraId: compra.id, fechaHora, profesorId, franjaIds });
+        return res.status(200).send('OK');
+      }
+
+      const { data: sesionCreada, error: sesionError } = await supabase
+        .from('sesion_clase')
+        .insert([
+          {
+            compra_id: compra.id,
+            profesor_id: profesorId,
+            descripcion_estudiante: descripcionEst,
+            documento_url: documentoUrl,
+            fecha_hora: new Date(fechaHora).toISOString(),
+            link_meet: null,
+            estado: 'programada',
+            franja_horaria_ids: franjaIds
+          }
+        ])
+        .select()
+        .single();
+
+      if (sesionError) {
+        console.error('❌ Error creando sesion_clase post-pago:', sesionError);
+        return res.status(200).send('OK');
+      }
+
+      await notificarCompraClasePersonalizada({ compra, sesionCreada, profesorId });
+      return res.status(200).send('OK');
+    }
+
+    // ✅ PAQUETE HORAS: admin + estudiante
+    if (compra.tipo_compra === 'paquete_horas') {
+      const meta = compra?.mp_raw?.metadata || {};
+      const horasCompradas = meta?.cantidad_horas || compra?.horas_totales || null;
+
+      await notificarCompraPaqueteHoras({ compra, estudiante, horasCompradas });
       return res.status(200).send('OK');
     }
 
@@ -569,10 +640,7 @@ export const obtenerEstadoCompra = async (req, res) => {
       .eq('id', compra_id)
       .single();
 
-    if (error || !compra) {
-      return res.status(404).json({ success: false, message: 'Compra no encontrada' });
-    }
-
+    if (error || !compra) return res.status(404).json({ success: false, message: 'Compra no encontrada' });
     return res.json({ success: true, data: compra });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Error consultando compra', error: error.message });
