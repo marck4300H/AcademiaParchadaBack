@@ -1,54 +1,40 @@
-import { DateTime } from 'luxon';
+// src/utils/asignarProfesor.js
+
 import { supabase } from '../config/supabase.js';
+import { DateTime } from 'luxon';
 import { buscarFranjasConsecutivas } from './franjaHelpers.js';
-
-const DEFAULT_TZ = 'America/Bogota';
-const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
-
-/**
- * Convierte un Date (instante) a (dia_semana, hora_inicio) en una zona específica.
- */
-const getDiaSemanaYHoraEnZona = (fechaHoraDate, timezone) => {
-  const tz = timezone || DEFAULT_TZ;
-
-  const dtLocal = DateTime.fromJSDate(fechaHoraDate, { zone: 'utc' }).setZone(tz);
-  if (!dtLocal.isValid) throw new Error(`Timezone inválido: ${tz}`);
-
-  const diaSemana = DIAS_SEMANA[dtLocal.weekday % 7]; // Luxon: 1=lunes..7=domingo
-  const horaInicio = dtLocal.toFormat('HH:mm:ss');
-
-  return { tz, dtLocal, diaSemana, horaInicio };
-};
-
-/**
- * Obtiene (inicioDiaUTC, finDiaUTC) para consultar sesiones del profesor en Supabase,
- * pero calculado según el día local del profesor.
- */
-const getRangoDiaUTCDesdeLocal = (dtLocal) => {
-  const inicioLocal = dtLocal.startOf('day');
-  const finLocal = dtLocal.endOf('day');
-
-  const inicioUTC = inicioLocal.toUTC().toISO();
-  const finUTC = finLocal.toUTC().toISO();
-
-  return { inicioUTC, finUTC };
-};
 
 /**
  * Asigna automáticamente un profesor a una clase personalizada.
  *
+ * IMPORTANTE (timezone):
+ * - fechaHoraISO representa el horario elegido por el estudiante.
+ * - Se interpreta con:
+ *    a) offset/Z incluido en el string, o
+ *    b) estudianteTimeZone cuando el string NO tiene offset.
+ * - Luego se convierte al timezone del profesor para comparar con franja_horaria.
+ *
  * @param {string} asignaturaId
- * @param {Date} fechaHora - Instante (Date) de la clase
+ * @param {string} fechaHoraISO - ISO con offset/Z recomendado; si viene sin offset, usar estudianteTimeZone
  * @param {number} duracionHoras
- * @returns {Promise<{profesor: object, franjasUtilizadas: string[] } | null>}
+ * @param {string|null} estudianteTimeZone - ej "America/Bogota"
+ * @returns {Promise<{profesor: any, franjasUtilizadas: string[], profesorTimeZone: string, fechaHoraProfesorISO: string} | null>}
  */
-export const asignarProfesorOptimo = async (asignaturaId, fechaHora, duracionHoras) => {
+export const asignarProfesorOptimo = async (asignaturaId, fechaHoraISO, duracionHoras, estudianteTimeZone = null) => {
   try {
-    if (!(fechaHora instanceof Date) || Number.isNaN(fechaHora.getTime())) {
-      throw new Error('fechaHora inválida (se esperaba Date válido)');
-    }
+    // 1) Parse robusto del input del estudiante
+    if (!fechaHoraISO || typeof fechaHoraISO !== 'string') return null;
 
-    // 1) Traer profesores que imparten esa asignatura, incluyendo timezone del usuario
+    const hasZone = /[zZ]$|[+-]\d{2}:\d{2}$/.test(fechaHoraISO);
+    const baseZone = estudianteTimeZone || 'America/Bogota';
+
+    const dtEstudiante = hasZone
+      ? DateTime.fromISO(fechaHoraISO, { setZone: true })          // respeta offset/Z
+      : DateTime.fromISO(fechaHoraISO, { zone: baseZone });        // interpreta como zona del estudiante
+
+    if (!dtEstudiante.isValid) return null;
+
+    // 2) Obtener profesores que imparten esta asignatura (incluye timezone)
     const { data: profesoresAsignatura, error: errorProfesores } = await supabase
       .from('profesor_asignatura')
       .select(`
@@ -66,44 +52,48 @@ export const asignarProfesorOptimo = async (asignaturaId, fechaHora, duracionHor
       .eq('asignatura_id', asignaturaId);
 
     if (errorProfesores) {
-      throw new Error(`Error al obtener profesores: ${errorProfesores.message}`);
-    }
-
-    if (!profesoresAsignatura || profesoresAsignatura.length === 0) {
-      console.log('❌ No hay profesores que impartan esta asignatura');
+      console.error('Error al obtener profesores:', errorProfesores);
       return null;
     }
 
-    console.log(`✅ Encontrados ${profesoresAsignatura.length} profesores que imparten esta asignatura`);
+    if (!profesoresAsignatura || profesoresAsignatura.length === 0) {
+      return null;
+    }
 
-    // 2) Calcular métricas/disponibilidad por profesor, usando SU timezone
+    // Helper: dia_semana en español (como lo usas en BD) [file:254]
+    const diasSemana = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+
+    // 3) Calcular métricas y disponibilidad por profesor (en su TZ)
     const profesoresConMetricas = await Promise.all(
       profesoresAsignatura.map(async (pa) => {
         const profesorId = pa.profesor_id;
         const profesor = pa.usuario;
-        const tzProfesor = profesor?.timezone || DEFAULT_TZ;
 
-        // Día/hora en la zona del profesor
-        const { dtLocal, diaSemana, horaInicio } = getDiaSemanaYHoraEnZona(fechaHora, tzProfesor);
+        const profesorTZ = profesor?.timezone || 'America/Bogota';
 
-        // 2.1 Contar sesiones activas
-        const { count: sesionesActivas, error: errorSesiones } = await supabase
+        // Convertir el instante elegido por estudiante a TZ del profesor
+        const dtProfesor = dtEstudiante.setZone(profesorTZ);
+
+        const diaSemana = diasSemana[dtProfesor.weekday % 7]; // luxon: 1..7 (lunes..domingo)
+        // Ajuste para que domingo sea 0:
+        // weekday 7 => domingo, weekday%7 = 0 => 'domingo' OK
+
+        const horaInicio = dtProfesor.toFormat('HH:mm:ss');
+
+        // 3.1 Contar sesiones activas
+        const { count: sesionesActivas } = await supabase
           .from('sesion_clase')
           .select('*', { count: 'exact', head: true })
           .eq('profesor_id', profesorId)
           .eq('estado', 'programada');
 
-        if (errorSesiones) console.error(`Error al contar sesiones del profesor ${profesorId}:`, errorSesiones);
-
-        // 2.2 Contar franjas totales
-        const { count: franjasDisponibles, error: errorFranjas } = await supabase
+        // 3.2 Contar franjas totales
+        const { count: franjasDisponibles } = await supabase
           .from('franja_horaria')
           .select('*', { count: 'exact', head: true })
           .eq('profesor_id', profesorId);
 
-        if (errorFranjas) console.error(`Error al contar franjas del profesor ${profesorId}:`, errorFranjas);
-
-        // 2.3 Traer franjas del día local del profesor
+        // 3.3 Obtener franjas del día (del profesor)
         const { data: franjasDelDia, error: errorFranjasDelDia } = await supabase
           .from('franja_horaria')
           .select('*')
@@ -111,34 +101,38 @@ export const asignarProfesorOptimo = async (asignaturaId, fechaHora, duracionHor
           .eq('dia_semana', diaSemana)
           .order('hora_inicio', { ascending: true });
 
-        if (errorFranjasDelDia) console.error(`Error al obtener franjas del día:`, errorFranjasDelDia);
+        if (errorFranjasDelDia) {
+          console.error('Error al obtener franjas del día:', errorFranjasDelDia);
+          return { profesor, score: Infinity, tieneDisponibilidad: false };
+        }
 
-        // 2.4 Buscar consecutivas
+        // 3.4 Buscar franjas consecutivas
         let franjasConsecutivas = null;
         if (franjasDelDia && franjasDelDia.length > 0) {
           franjasConsecutivas = buscarFranjasConsecutivas(franjasDelDia, horaInicio, duracionHoras);
         }
+
         const tieneFranjasConsecutivas = franjasConsecutivas !== null;
 
-        // 2.5 Conflictos: sesiones del profesor en el MISMO día local (convertido a UTC para query)
+        // 3.5 Verificar conflictos contra sesiones programadas en el día del profesor
         let tieneConflicto = false;
 
         if (tieneFranjasConsecutivas) {
-          const { inicioUTC, finUTC } = getRangoDiaUTCDesdeLocal(dtLocal);
+          // Ventana de ese día EN TZ del profesor, pero almacenado como ISO UTC en BD.
+          const inicioDiaProfesor = dtProfesor.startOf('day').toUTC().toISO();
+          const finDiaProfesor = dtProfesor.endOf('day').toUTC().toISO();
 
           const { data: sesionesExistentes, error: errorSesionesExistentes } = await supabase
             .from('sesion_clase')
-            .select('fecha_hora, franja_horaria_ids')
+            .select('franja_horaria_ids')
             .eq('profesor_id', profesorId)
             .eq('estado', 'programada')
-            .gte('fecha_hora', inicioUTC)
-            .lte('fecha_hora', finUTC);
+            .gte('fecha_hora', inicioDiaProfesor)
+            .lte('fecha_hora', finDiaProfesor);
 
           if (errorSesionesExistentes) {
-            console.error(`Error al verificar conflictos:`, errorSesionesExistentes);
-          }
-
-          if (sesionesExistentes && sesionesExistentes.length > 0) {
+            console.error('Error al verificar conflictos:', errorSesionesExistentes);
+          } else if (sesionesExistentes && sesionesExistentes.length > 0) {
             tieneConflicto = sesionesExistentes.some((sesion) => {
               if (!sesion.franja_horaria_ids) return false;
               return franjasConsecutivas.some((franjaId) => sesion.franja_horaria_ids.includes(franjaId));
@@ -156,9 +150,8 @@ export const asignarProfesorOptimo = async (asignaturaId, fechaHora, duracionHor
 
         return {
           profesor,
-          tzProfesor,
-          diaSemana,
-          horaInicio,
+          profesorTZ,
+          fechaHoraProfesorISO: dtProfesor.toISO(), // útil para logs/metadata si quieres
           sesionesActivas: sesionesActivas || 0,
           franjasDisponibles: franjasDisponibles || 0,
           tieneFranjasConsecutivas,
@@ -166,43 +159,21 @@ export const asignarProfesorOptimo = async (asignaturaId, fechaHora, duracionHor
           tieneConflicto,
           tieneDisponibilidad,
           esAdmin,
-          score,
+          score
         };
       })
     );
 
-    // 3) Ordenar por score
     profesoresConMetricas.sort((a, b) => a.score - b.score);
 
-    console.log('📊 Métricas de profesores para asignación:');
-    profesoresConMetricas.forEach((p) => {
-      console.log(` - ${p.profesor.nombre} ${p.profesor.apellido} (${p.profesor.rol}) TZ=${p.tzProfesor}`);
-      console.log(` • Día local: ${p.diaSemana}`);
-      console.log(` • Hora inicio local: ${p.horaInicio}`);
-      console.log(` • Sesiones: ${p.sesionesActivas}`);
-      console.log(` • Franjas totales: ${p.franjasDisponibles}`);
-      console.log(` • Tiene ${duracionHoras}h consecutivas: ${p.tieneFranjasConsecutivas}`);
-      console.log(` • Tiene conflicto: ${p.tieneConflicto}`);
-      console.log(` • Disponible: ${p.tieneDisponibilidad}`);
-      console.log(` • Score: ${p.score}`);
-    });
-
-    // 4) Elegir profesor disponible
     const profesorSeleccionado = profesoresConMetricas.find((p) => p.tieneDisponibilidad);
-
-    if (!profesorSeleccionado) {
-      console.log('❌ Ningún profesor tiene disponibilidad completa para ese horario');
-      return null;
-    }
-
-    console.log(
-      `✅ Profesor asignado: ${profesorSeleccionado.profesor.nombre} ${profesorSeleccionado.profesor.apellido} (${profesorSeleccionado.profesor.id})`
-    );
-    console.log(`📍 Franjas utilizadas: ${profesorSeleccionado.franjasConsecutivas.join(', ')}`);
+    if (!profesorSeleccionado) return null;
 
     return {
       profesor: profesorSeleccionado.profesor,
       franjasUtilizadas: profesorSeleccionado.franjasConsecutivas,
+      profesorTimeZone: profesorSeleccionado.profesorTZ,
+      fechaHoraProfesorISO: profesorSeleccionado.fechaHoraProfesorISO
     };
   } catch (error) {
     console.error('❌ Error en asignación de profesor:', error);
@@ -210,9 +181,6 @@ export const asignarProfesorOptimo = async (asignaturaId, fechaHora, duracionHor
   }
 };
 
-/**
- * Obtiene las franjas horarias disponibles de un profesor
- */
 export const obtenerFranjasDisponibles = async (profesorId) => {
   try {
     const { data: franjas, error } = await supabase
