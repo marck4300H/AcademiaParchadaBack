@@ -462,12 +462,38 @@ export const webhookMercadoPago = async (req, res) => {
       // CURSO
       if (compra.tipo_compra === 'curso' && compra.curso_id) {
         try {
+          // 1) idempotencia de inscripción: si ya existe, no duplicar
+          const { data: existente, error: errExist } = await supabase
+            .from('inscripcion_curso')
+            .select('id')
+            .eq('estudiante_id', compra.estudiante_id)
+            .eq('curso_id', compra.curso_id)
+            .maybeSingle();
+
+          if (errExist) throw errExist;
+
+          if (!existente?.id) {
+            const { error: errIns } = await supabase
+              .from('inscripcion_curso')
+              .insert([{
+                estudiante_id: compra.estudiante_id,
+                curso_id: compra.curso_id,
+                fecha_inscripcion: new Date().toISOString()
+              }]);
+
+            if (errIns) throw errIns;
+          }
+
+          // 2) notificación (ya la tenías)
           await notifyCompraCursoAfterPaymentApproved({ compraId: compra.id });
+
+          return res.status(200).send('OK');
         } catch (e) {
-          console.error('❌ Error notificando curso (emailService):', e?.message || e);
+          console.error('❌ Error post-pago curso (inscripción/email):', e?.message || e);
+          return res.status(200).send('OK');
         }
-        return res.status(200).send('OK');
       }
+
 
       // PAQUETE HORAS
       if (compra.tipo_compra === 'paquete_horas') {

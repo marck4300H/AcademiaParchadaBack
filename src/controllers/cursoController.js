@@ -1,15 +1,13 @@
 // src/controllers/cursoController.js
 
 import { supabase } from '../config/supabase.js';
+import { uploadToSupabaseBucket, buildImagePath, safeName } from '../services/storageService.js';
 
 /**
  * CU-021: Crear Curso
  * POST /api/cursos
  * Rol: Administrador
  */
-// Reemplaza SOLO esta función dentro de src/controllers/cursoController.js
-import { uploadToSupabaseBucket, buildImagePath, safeName } from '../services/storageService.js';
-
 export const createCurso = async (req, res) => {
   try {
     const {
@@ -164,7 +162,10 @@ export const createCurso = async (req, res) => {
     if (req.file) {
       const allowed = new Set(['image/png', 'image/jpeg', 'image/webp']);
       if (!allowed.has(req.file.mimetype)) {
-        return res.status(400).json({ success: false, message: `Tipo de imagen no permitido: ${req.file.mimetype}` });
+        return res.status(400).json({
+          success: false,
+          message: `Tipo de imagen no permitido: ${req.file.mimetype}`
+        });
       }
 
       const path = buildImagePath({
@@ -216,16 +217,30 @@ export const createCurso = async (req, res) => {
   }
 };
 
-
 /**
  * CU-022: Listar Cursos
  * GET /api/cursos
  * Rol: Público
+ *
+ * CU-060: Filtros por precio
+ * Query soportada:
+ * - minPrecio
+ * - maxPrecio
  */
 export const listCursos = async (req, res) => {
   try {
-    const { page = 1, limit = 10, estado, tipo, asignatura_id, profesor_id } = req.query;
-    const offset = (page - 1) * limit;
+    const {
+      page = 1,
+      limit = 10,
+      estado,
+      tipo,
+      asignatura_id,
+      profesor_id,
+      minPrecio,
+      maxPrecio
+    } = req.query;
+
+    const offset = (Number(page) - 1) * Number(limit);
 
     // Construir query base
     let query = supabase
@@ -239,6 +254,10 @@ export const listCursos = async (req, res) => {
     if (asignatura_id) query = query.eq('asignatura_id', asignatura_id);
     if (profesor_id) query = query.eq('profesor_id', profesor_id);
 
+    // CU-060: filtros precio
+    if (minPrecio !== undefined && minPrecio !== '') query = query.gte('precio', Number(minPrecio));
+    if (maxPrecio !== undefined && maxPrecio !== '') query = query.lte('precio', Number(maxPrecio));
+
     // Paginación
     query = query.range(offset, offset + parseInt(limit) - 1);
 
@@ -251,7 +270,7 @@ export const listCursos = async (req, res) => {
 
     // Obtener relaciones para cada curso
     const cursosConRelaciones = await Promise.all(
-      cursos.map(curso => obtenerCursoConRelaciones(curso.id))
+      (cursos || []).map((curso) => obtenerCursoConRelaciones(curso.id))
     );
 
     res.json({
@@ -266,7 +285,6 @@ export const listCursos = async (req, res) => {
         }
       }
     });
-
   } catch (error) {
     console.error('Error en listCursos:', error);
     res.status(500).json({
@@ -301,7 +319,6 @@ export const getCursoById = async (req, res) => {
         curso
       }
     });
-
   } catch (error) {
     console.error('Error en getCursoById:', error);
     res.status(500).json({
@@ -480,7 +497,6 @@ export const updateCurso = async (req, res) => {
         curso: cursoActualizado
       }
     });
-
   } catch (error) {
     console.error('Error en updateCurso:', error);
     res.status(500).json({
@@ -567,7 +583,6 @@ export const deleteCurso = async (req, res) => {
       success: true,
       message: 'Curso eliminado exitosamente'
     });
-
   } catch (error) {
     console.error('Error en deleteCurso:', error);
     res.status(500).json({
@@ -625,3 +640,55 @@ async function obtenerCursoConRelaciones(cursoId) {
 
   return curso;
 }
+
+/**
+ * CU-059: Buscar cursos por nombre o descripción
+ * GET /api/cursos/buscar?q=...
+ */
+export const buscarCursos = async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+
+    if (!q) {
+      return res.status(400).json({
+        success: false,
+        message: 'Debes enviar query param q'
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('curso')
+      .select(`
+        id,
+        nombre,
+        descripcion,
+        precio,
+        duracion_horas,
+        tipo,
+        estado,
+        profesor_id,
+        asignatura_id,
+        imagen_url,
+        fecha_inicio,
+        fecha_fin,
+        created_at,
+        updated_at
+      `)
+      .or(`nombre.ilike.%${q}%,descripcion.ilike.%${q}%`)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    return res.json({
+      success: true,
+      data: { cursos: data || [] }
+    });
+  } catch (error) {
+    console.error('buscarCursos:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error buscando cursos',
+      error: error.message
+    });
+  }
+};

@@ -5,7 +5,8 @@ import {
   listCursos,
   getCursoById,
   updateCurso,
-  deleteCurso
+  deleteCurso,
+  buscarCursos
 } from '../controllers/cursoController.js';
 
 import { authenticate, authorize } from '../middlewares/auth.js';
@@ -16,20 +17,24 @@ const router = express.Router();
 /**
  * POST /api/cursos
  * Admin
- * Ahora acepta multipart/form-data opcional con:
+ * multipart/form-data opcional:
  * - image: File (opcional)
- * y los campos del curso como Text.
- * También sigue funcionando con JSON (sin archivo).
  */
 router.post(
   '/',
   authenticate,
   authorize('administrador'),
-  uploadSingle('image'), // opcional
+  uploadSingle('image'),
   createCurso
 );
 
 router.get('/', listCursos);
+
+/**
+ * CU-059: Buscar cursos
+ * GET /api/cursos/buscar?q=matematicas
+ */
+router.get('/buscar', buscarCursos);
 
 router.get('/:id', getCursoById);
 
