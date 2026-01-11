@@ -7,7 +7,11 @@ import { supabase } from '../config/supabase.js';
 import { mpPreference, mpPayment, mpMerchantOrder } from '../config/mercadopago.js';
 
 import { asignarProfesorOptimo } from '../utils/asignarProfesor.js';
-import { notifyClasePersonalizadaAfterSessionCreated } from '../services/emailService.js';
+import {
+  notifyClasePersonalizadaAfterSessionCreated,
+  notifyCompraCursoAfterPaymentApproved,
+  notifyPaqueteHorasAfterPaymentApproved
+} from '../services/emailService.js';
 
 dotenv.config();
 
@@ -379,13 +383,41 @@ export const webhookMercadoPago = async (req, res) => {
 
       const { data: compra, error: errCompra } = await supabase
         .from('compra')
-        .select('id,tipo_compra,clase_personalizada_id,mp_raw')
+        .select('id,tipo_compra,curso_id,clase_personalizada_id,mp_raw')
         .eq('id', external_reference)
         .single();
 
       if (errCompra || !compra?.id) return res.status(200).send('OK');
 
-      // Solo nos interesa la clase personalizada aquí
+      // ===============================
+      // ✅ CURSO: solo llamar emailService
+      // ===============================
+      if (compra.tipo_compra === 'curso' && compra.curso_id) {
+        try {
+          const notifyResult = await notifyCompraCursoAfterPaymentApproved({ compraId: compra.id });
+          console.log('✅ notifyCompraCursoAfterPaymentApproved result:', { compraId: compra.id, notifyResult });
+        } catch (e) {
+          console.error('❌ Error notificando curso (emailService):', e?.message || e);
+        }
+        return res.status(200).send('OK');
+      }
+
+      // ===============================
+      // ✅ PAQUETE HORAS: solo llamar emailService
+      // ===============================
+      if (compra.tipo_compra === 'paquete_horas') {
+        try {
+          const notifyResult = await notifyPaqueteHorasAfterPaymentApproved({ compraId: compra.id });
+          console.log('✅ notifyPaqueteHorasAfterPaymentApproved result:', { compraId: compra.id, notifyResult });
+        } catch (e) {
+          console.error('❌ Error notificando paquete_horas (emailService):', e?.message || e);
+        }
+        return res.status(200).send('OK');
+      }
+
+      // ===============================
+      // CLASE PERSONALIZADA (se mantiene igual)
+      // ===============================
       if (compra.tipo_compra === 'clase_personalizada' && compra.clase_personalizada_id) {
         const { data: sesionExist } = await supabase
           .from('sesion_clase')
@@ -403,7 +435,12 @@ export const webhookMercadoPago = async (req, res) => {
         const documentoUrl = meta?.documento_url || null;
 
         if (!fechaHora || !profesorId || !Array.isArray(franjaIds) || franjaIds.length === 0) {
-          console.error('❌ metadata incompleta para crear sesion_clase', { compraId: compra.id, fechaHora, profesorId, franjaIds });
+          console.error('❌ metadata incompleta para crear sesion_clase', {
+            compraId: compra.id,
+            fechaHora,
+            profesorId,
+            franjaIds
+          });
           return res.status(200).send('OK');
         }
 
@@ -432,7 +469,10 @@ export const webhookMercadoPago = async (req, res) => {
         // ✅ ÚNICO LLAMADO: emailService consulta todo
         try {
           const notifyResult = await notifyClasePersonalizadaAfterSessionCreated({ sesionId: sesionCreada.id });
-          console.log('✅ notifyClasePersonalizadaAfterSessionCreated result:', { sesionId: sesionCreada.id, notifyResult });
+          console.log('✅ notifyClasePersonalizadaAfterSessionCreated result:', {
+            sesionId: sesionCreada.id,
+            notifyResult
+          });
         } catch (e) {
           // No devolver 500 a MP para no causar reintentos infinitos
           console.error('❌ Error notificando clase personalizada (emailService):', e?.message || e);

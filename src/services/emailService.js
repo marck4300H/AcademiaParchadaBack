@@ -429,3 +429,368 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
   console.log('✅ notifyClasePersonalizadaAfterSessionCreated final', { sesionId, result });
   return result;
 };
+// =============================
+// COMPRA CURSO (emails + orquestador)
+// =============================
+
+export const sendCompraCursoAdminEmail = async ({
+  adminEmail,
+  compraId,
+  montoTotal,
+  cursoNombre,
+  profesor,
+  estudiante,
+}) => {
+  if (!adminEmail) return null;
+
+  return sendEmailStrict(
+    {
+      to: adminEmail,
+      subject: `Compra de curso confirmada #${safe(compraId)}`,
+      html: wrapHtml(`
+        <h2>Nueva compra de curso ✅</h2>
+        <p><strong>Compra ID:</strong> ${safe(compraId)}</p>
+        <p><strong>Curso:</strong> ${safe(cursoNombre)}</p>
+        <p><strong>Profesor:</strong> ${safe(profesor?.nombre)} ${safe(profesor?.apellido)} (${safe(profesor?.email)})</p>
+        <p><strong>Monto:</strong> ${safe(montoTotal)} COP</p>
+        <hr/>
+        <h3>Datos del estudiante</h3>
+        <p><strong>Nombre:</strong> ${safe(estudiante?.nombre)} ${safe(estudiante?.apellido)}</p>
+        <p><strong>Email:</strong> ${safe(estudiante?.email)}</p>
+        <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
+        <p><strong>Timezone:</strong> ${safe(estudiante?.timezone)}</p>
+      `),
+    },
+    2
+  );
+};
+
+export const sendCompraCursoProfesorEmail = async ({
+  profesorEmail,
+  cursoNombre,
+  compraId,
+  estudiante,
+}) => {
+  if (!profesorEmail) return null;
+
+  return sendEmailStrict(
+    {
+      to: profesorEmail,
+      subject: `Nuevo estudiante - ${safe(cursoNombre)}`,
+      html: wrapHtml(`
+        <h2>Nuevo estudiante en tu curso ✅</h2>
+        <p><strong>Curso:</strong> ${safe(cursoNombre)}</p>
+        <p><strong>Compra ID:</strong> ${safe(compraId)}</p>
+        <hr/>
+        <h3>Datos del estudiante</h3>
+        <p><strong>Nombre:</strong> ${safe(estudiante?.nombre)} ${safe(estudiante?.apellido)}</p>
+        <p><strong>Email:</strong> ${safe(estudiante?.email)}</p>
+        <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
+        <p><strong>Timezone:</strong> ${safe(estudiante?.timezone)}</p>
+      `),
+    },
+    2
+  );
+};
+
+export const sendCompraCursoEstudianteEmail = async ({
+  estudianteEmail,
+  compraId,
+  profesor,
+  cursoNombre,
+}) => {
+  if (!estudianteEmail) return null;
+
+  return sendEmailStrict(
+    {
+      to: estudianteEmail,
+      subject: 'Tu compra de curso fue exitosa - Parche Académico',
+      html: wrapHtml(`
+        <h2>Compra exitosa ✅</h2>
+        <p><strong>ID de tu compra:</strong> ${safe(compraId)}</p>
+        <p>Gracias por adquirir tu curso pregrabado en Parche Académico.</p>
+        <p><strong>Curso:</strong> ${safe(cursoNombre)}</p>
+        <hr/>
+        <h3>Datos del profesor</h3>
+        <p><strong>Nombre:</strong> ${safe(profesor?.nombre)} ${safe(profesor?.apellido)}</p>
+        <p><strong>Email:</strong> ${safe(profesor?.email)}</p>
+        <p>Parche Académico</p>
+      `),
+    },
+    2
+  );
+};
+
+/**
+ * ✅ Orquestador CURSO:
+ * - Busca compra + curso + estudiante + profesor
+ * - (Opcional pero recomendado) crea inscripcion_curso si no existe
+ * - Envía correos a admin + profesor + estudiante
+ */
+export const notifyCompraCursoAfterPaymentApproved = async ({ compraId }) => {
+  const result = {
+    admin: { ok: false, error: null, to: null, resendId: null },
+    profesor: { ok: false, error: null, to: null, resendId: null },
+    estudiante: { ok: false, error: null, to: null, resendId: null },
+  };
+
+  // 1) Compra
+  const { data: compra, error: errCompra } = await supabase
+    .from('compra')
+    .select('id,tipo_compra,estudiante_id,curso_id,monto_total,mp_raw')
+    .eq('id', compraId)
+    .single();
+
+  if (errCompra || !compra?.id) {
+    throw new Error(`notifyCompraCursoAfterPaymentApproved: compra no encontrada (${compraId})`);
+  }
+  if (compra.tipo_compra !== 'curso' || !compra.curso_id) {
+    throw new Error(`notifyCompraCursoAfterPaymentApproved: compra no es de curso (${compraId})`);
+  }
+
+  // 2) Estudiante
+  const { data: estudiante } = await supabase
+    .from('usuario')
+    .select('id,nombre,apellido,email,telefono,timezone')
+    .eq('id', compra.estudiante_id)
+    .single();
+
+  // 3) Curso + profesor
+  const { data: curso, error: errCurso } = await supabase
+    .from('curso')
+    .select('id,nombre,profesor:profesor_id(id,nombre,apellido,email)')
+    .eq('id', compra.curso_id)
+    .single();
+
+  if (errCurso || !curso?.id) {
+    throw new Error(`notifyCompraCursoAfterPaymentApproved: curso no encontrado (${compra.curso_id})`);
+  }
+
+  const profesor = curso?.profesor || null;
+
+  // 4) Inscripción idempotente (para que el estudiante tenga acceso)
+  try {
+    const { data: inscExist } = await supabase
+      .from('inscripcion_curso')
+      .select('id')
+      .eq('estudiante_id', compra.estudiante_id)
+      .eq('curso_id', compra.curso_id)
+      .maybeSingle();
+
+    if (!inscExist?.id) {
+      await supabase.from('inscripcion_curso').insert([
+        {
+          estudiante_id: compra.estudiante_id,
+          curso_id: compra.curso_id,
+          fecha_inscripcion: new Date().toISOString(),
+        },
+      ]);
+    }
+  } catch (e) {
+    console.error('⚠️ No se pudo asegurar inscripcion_curso (se envían correos igual):', e?.message || e);
+  }
+
+  const adminEmail = normalizeEmail(await getAdminEmail());
+
+  // 5) Envíos (secuencial, mismo estilo que clase personalizada)
+  try {
+    if (!adminEmail) throw new Error('ADMIN_EMAIL/ADMINEMAIL no configurado.');
+    const sent = await sendCompraCursoAdminEmail({
+      adminEmail,
+      compraId: compra.id,
+      montoTotal: compra.monto_total,
+      cursoNombre: curso.nombre,
+      profesor,
+      estudiante,
+    });
+    result.admin = { ok: true, error: null, to: sent?.to ?? adminEmail, resendId: sent?.resendId ?? null };
+  } catch (e) {
+    result.admin.error = e?.message || String(e);
+    result.admin.to = adminEmail;
+  }
+
+  try {
+    const profesorEmail = normalizeEmail(profesor?.email);
+    if (!profesorEmail) throw new Error('Profesor sin email en curso.profesor_id.');
+    const sent = await sendCompraCursoProfesorEmail({
+      profesorEmail,
+      cursoNombre: curso.nombre,
+      compraId: compra.id,
+      estudiante,
+    });
+    result.profesor = { ok: true, error: null, to: sent?.to ?? profesorEmail, resendId: sent?.resendId ?? null };
+  } catch (e) {
+    result.profesor.error = e?.message || String(e);
+    result.profesor.to = normalizeEmail(profesor?.email);
+  }
+
+  try {
+    const estudianteEmail = normalizeEmail(estudiante?.email);
+    if (!estudianteEmail) throw new Error('Estudiante sin email en BD.');
+    const sent = await sendCompraCursoEstudianteEmail({
+      estudianteEmail,
+      compraId: compra.id,
+      profesor,
+      cursoNombre: curso.nombre,
+    });
+    result.estudiante = { ok: true, error: null, to: sent?.to ?? estudianteEmail, resendId: sent?.resendId ?? null };
+  } catch (e) {
+    result.estudiante.error = e?.message || String(e);
+    result.estudiante.to = normalizeEmail(estudiante?.email);
+  }
+
+  console.log('✅ notifyCompraCursoAfterPaymentApproved final', { compraId: compra.id, result });
+  return result;
+};
+
+// =============================
+// PAQUETE HORAS (emails + orquestador)
+// =============================
+
+export const sendCompraPaqueteHorasAdminEmail = async ({
+  adminEmail,
+  compraId,
+  montoTotal,
+  cantidadHoras,
+  asignaturaNombre,
+  estudiante,
+}) => {
+  if (!adminEmail) return null;
+
+  return sendEmailStrict(
+    {
+      to: adminEmail,
+      subject: `Compra de paquete de horas confirmada #${safe(compraId)}`,
+      html: wrapHtml(`
+        <h2>Nueva compra de paquete de horas ✅</h2>
+        <p><strong>Compra ID:</strong> ${safe(compraId)}</p>
+        <p><strong>Horas compradas:</strong> ${safe(cantidadHoras)}</p>
+        <p><strong>Asignatura:</strong> ${safe(asignaturaNombre)}</p>
+        <p><strong>Monto:</strong> ${safe(montoTotal)} COP</p>
+        <hr/>
+        <h3>Datos del estudiante</h3>
+        <p><strong>Nombre:</strong> ${safe(estudiante?.nombre)} ${safe(estudiante?.apellido)}</p>
+        <p><strong>Email:</strong> ${safe(estudiante?.email)}</p>
+        <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
+        <p><strong>Timezone:</strong> ${safe(estudiante?.timezone)}</p>
+      `),
+    },
+    2
+  );
+};
+
+export const sendCompraPaqueteHorasEstudianteEmail = async ({
+  estudianteEmail,
+  compraId,
+  montoTotal,
+  cantidadHoras,
+  asignaturaNombre,
+}) => {
+  if (!estudianteEmail) return null;
+
+  return sendEmailStrict(
+    {
+      to: estudianteEmail,
+      subject: 'Tu paquete de horas fue confirmado - Parche Académico',
+      html: wrapHtml(`
+        <h2>Compra exitosa ✅</h2>
+        <p><strong>ID de tu compra:</strong> ${safe(compraId)}</p>
+        <p><strong>Horas compradas:</strong> ${safe(cantidadHoras)}</p>
+        <p><strong>Asignatura:</strong> ${safe(asignaturaNombre)}</p>
+        <p><strong>Monto:</strong> ${safe(montoTotal)} COP</p>
+        <p>Ya puedes agendar sesiones usando tus horas disponibles.</p>
+        <p>Parche Académico</p>
+      `),
+    },
+    2
+  );
+};
+
+/**
+ * ✅ Orquestador PAQUETE:
+ * - Busca compra + estudiante + clase_personalizada(+asignatura)
+ * - Envía correos a admin + estudiante
+ */
+export const notifyPaqueteHorasAfterPaymentApproved = async ({ compraId }) => {
+  const result = {
+    admin: { ok: false, error: null, to: null, resendId: null },
+    estudiante: { ok: false, error: null, to: null, resendId: null },
+  };
+
+  // 1) Compra
+  const { data: compra, error: errCompra } = await supabase
+    .from('compra')
+    .select('id,tipo_compra,estudiante_id,clase_personalizada_id,monto_total,horas_totales,mp_raw')
+    .eq('id', compraId)
+    .single();
+
+  if (errCompra || !compra?.id) {
+    throw new Error(`notifyPaqueteHorasAfterPaymentApproved: compra no encontrada (${compraId})`);
+  }
+  if (compra.tipo_compra !== 'paquete_horas') {
+    throw new Error(`notifyPaqueteHorasAfterPaymentApproved: compra no es paquete_horas (${compraId})`);
+  }
+
+  // 2) Estudiante
+  const { data: estudiante } = await supabase
+    .from('usuario')
+    .select('id,nombre,apellido,email,telefono,timezone')
+    .eq('id', compra.estudiante_id)
+    .single();
+
+  // 3) Clase personalizada + asignatura (solo para mostrar nombre)
+  let asignaturaNombre = 'Clase personalizada';
+  try {
+    if (compra.clase_personalizada_id) {
+      const { data: clase } = await supabase
+        .from('clase_personalizada')
+        .select('id,asignatura:asignatura_id(id,nombre)')
+        .eq('id', compra.clase_personalizada_id)
+        .single();
+      asignaturaNombre = clase?.asignatura?.nombre || asignaturaNombre;
+    }
+  } catch (e) {
+    console.error('⚠️ No se pudo leer asignatura para paquete_horas:', e?.message || e);
+  }
+
+  const meta = compra?.mp_raw?.metadata || {};
+  const cantidadHoras = Number(compra?.horas_totales ?? meta?.cantidad_horas ?? 0) || null;
+
+  const adminEmail = normalizeEmail(await getAdminEmail());
+
+  // 4) Envíos
+  try {
+    if (!adminEmail) throw new Error('ADMIN_EMAIL/ADMINEMAIL no configurado.');
+    const sent = await sendCompraPaqueteHorasAdminEmail({
+      adminEmail,
+      compraId: compra.id,
+      montoTotal: compra.monto_total,
+      cantidadHoras,
+      asignaturaNombre,
+      estudiante,
+    });
+    result.admin = { ok: true, error: null, to: sent?.to ?? adminEmail, resendId: sent?.resendId ?? null };
+  } catch (e) {
+    result.admin.error = e?.message || String(e);
+    result.admin.to = adminEmail;
+  }
+
+  try {
+    const estudianteEmail = normalizeEmail(estudiante?.email);
+    if (!estudianteEmail) throw new Error('Estudiante sin email en BD.');
+    const sent = await sendCompraPaqueteHorasEstudianteEmail({
+      estudianteEmail,
+      compraId: compra.id,
+      montoTotal: compra.monto_total,
+      cantidadHoras,
+      asignaturaNombre,
+    });
+    result.estudiante = { ok: true, error: null, to: sent?.to ?? estudianteEmail, resendId: sent?.resendId ?? null };
+  } catch (e) {
+    result.estudiante.error = e?.message || String(e);
+    result.estudiante.to = normalizeEmail(estudiante?.email);
+  }
+
+  console.log('✅ notifyPaqueteHorasAfterPaymentApproved final', { compraId: compra.id, result });
+  return result;
+};
