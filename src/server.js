@@ -16,6 +16,8 @@ import estudianteRoutes from './routes/estudiante.routes.js';
 import profesorDashboardRoutes from './routes/profesorDashboard.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import sesionesRoutes from './routes/sesiones.routes.js';
+import imagenesRoutes from './routes/imagenes.routes.js';
+import materialEstudioRoutes from './routes/materialEstudio.routes.js';
 
 // Cargar variables de entorno
 dotenv.config();
@@ -117,6 +119,8 @@ app.use('/api/estudiante', estudianteRoutes);
 app.use('/api/profesor', profesorDashboardRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/sesiones', sesionesRoutes);
+app.use('/api/imagenes', imagenesRoutes);
+app.use('/api/material-estudio', materialEstudioRoutes);
 
 // ============================================
 // MANEJO DE RUTAS NO ENCONTRADAS

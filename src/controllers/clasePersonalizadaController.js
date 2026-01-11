@@ -7,6 +7,9 @@ import { supabase } from '../config/supabase.js';
  * POST /api/clases-personalizadas
  * Rol: Administrador
  */
+// Dentro de src/controllers/clasePersonalizadaController.js
+import { uploadToSupabaseBucket, buildImagePath, safeName } from '../services/storageService.js';
+
 export const createClasePersonalizada = async (req, res) => {
   try {
     const {
@@ -17,48 +20,29 @@ export const createClasePersonalizada = async (req, res) => {
       valor_pago_profesor
     } = req.body;
 
-    // Validar campos requeridos
     if (!asignatura_id || !precio || !duracion_horas || !tipo_pago_profesor || valor_pago_profesor === undefined) {
-      return res.status(400).json({
-        success: false,
-        message: 'Todos los campos son obligatorios'
-      });
+      return res.status(400).json({ success: false, message: 'Todos los campos son obligatorios' });
     }
 
-    // Validar que precio y duracion_horas sean positivos
-    if (precio <= 0 || duracion_horas <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'El precio y la duración deben ser mayores a 0'
-      });
+    if (Number(precio) <= 0 || Number(duracion_horas) <= 0) {
+      return res.status(400).json({ success: false, message: 'El precio y la duración deben ser mayores a 0' });
     }
 
-    // Validar tipo_pago_profesor
     if (!['porcentaje', 'monto_fijo'].includes(tipo_pago_profesor)) {
-      return res.status(400).json({
-        success: false,
-        message: 'El tipo de pago profesor debe ser "porcentaje" o "monto_fijo"'
-      });
+      return res.status(400).json({ success: false, message: 'El tipo de pago profesor debe ser "porcentaje" o "monto_fijo"' });
     }
 
-    // Validar valor_pago_profesor según tipo
     if (tipo_pago_profesor === 'porcentaje') {
-      if (valor_pago_profesor < 0 || valor_pago_profesor > 100) {
-        return res.status(400).json({
-          success: false,
-          message: 'El porcentaje debe estar entre 0 y 100'
-        });
+      if (Number(valor_pago_profesor) < 0 || Number(valor_pago_profesor) > 100) {
+        return res.status(400).json({ success: false, message: 'El porcentaje debe estar entre 0 y 100' });
       }
     } else {
-      if (valor_pago_profesor < 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'El monto fijo debe ser mayor o igual a 0'
-        });
+      if (Number(valor_pago_profesor) < 0) {
+        return res.status(400).json({ success: false, message: 'El monto fijo debe ser mayor o igual a 0' });
       }
     }
 
-    // Verificar que la asignatura existe
+    // validar asignatura existe
     const { data: asignatura, error: asignaturaError } = await supabase
       .from('asignatura')
       .select('id, nombre')
@@ -66,54 +50,79 @@ export const createClasePersonalizada = async (req, res) => {
       .single();
 
     if (asignaturaError || !asignatura) {
-      return res.status(404).json({
-        success: false,
-        message: 'Asignatura no encontrada'
-      });
+      return res.status(404).json({ success: false, message: 'Asignatura no encontrada' });
     }
 
-    // Crear clase personalizada
+    // 1) crear clase
     const { data: clasePersonalizada, error } = await supabase
       .from('clase_personalizada')
       .insert([{
         asignatura_id,
-        precio,
-        duracion_horas,
+        precio: Number(precio),
+        duracion_horas: Number(duracion_horas),
         tipo_pago_profesor,
-        valor_pago_profesor
+        valor_pago_profesor: Number(valor_pago_profesor)
       }])
-      .select(`
-        *,
-        asignatura:asignatura_id (
-          id,
-          nombre,
-          descripcion
-        )
-      `)
+      .select('*')
       .single();
 
-    if (error) {
-      console.error('Error al crear clase personalizada:', error);
-      throw error;
+    if (error) throw error;
+
+    // 2) si viene imagen, subir y actualizar
+    if (req.file) {
+      const allowed = new Set(['image/png', 'image/jpeg', 'image/webp']);
+      if (!allowed.has(req.file.mimetype)) {
+        return res.status(400).json({ success: false, message: `Tipo de imagen no permitido: ${req.file.mimetype}` });
+      }
+
+      const path = buildImagePath({
+        entity: 'clase_personalizada',
+        id: clasePersonalizada.id,
+        originalname: safeName(req.file.originalname)
+      });
+
+      const up = await uploadToSupabaseBucket({
+        bucket: 'pdfs',
+        fileBuffer: req.file.buffer,
+        mimetype: req.file.mimetype,
+        path
+      });
+
+      const { data: updated, error: upErr } = await supabase
+        .from('clase_personalizada')
+        .update({
+          imagen_url: up.publicUrl,
+          imagen_path: up.path,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', clasePersonalizada.id)
+        .select('*')
+        .single();
+
+      if (upErr) throw upErr;
+
+      return res.status(201).json({
+        success: true,
+        message: 'Clase personalizada creada exitosamente',
+        data: { clase_personalizada: updated }
+      });
     }
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Clase personalizada creada exitosamente',
-      data: {
-        clase_personalizada: clasePersonalizada
-      }
+      data: { clase_personalizada: clasePersonalizada }
     });
-
   } catch (error) {
     console.error('Error en createClasePersonalizada:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
       error: error.message
     });
   }
 };
+
 
 /**
  * CU-018: Listar Clases Personalizadas

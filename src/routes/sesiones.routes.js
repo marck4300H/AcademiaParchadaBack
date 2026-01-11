@@ -2,8 +2,20 @@
 import express from 'express';
 import { authenticate, authorize } from '../middlewares/auth.js';
 import { listarSesionesPendientesLink, asignarLinkMeet } from '../controllers/sesionesController.js';
+import { uploadSingle } from '../middlewares/uploadMemory.js';
+import { uploadDocumentoSesion } from '../controllers/sesionDocumentoController.js';
 
 const router = express.Router();
+
+router.put(
+  '/:sesionId/documento',
+  authenticate,
+  authorize('administrador', 'profesor', 'estudiante'),
+  uploadSingle('file'),
+  uploadDocumentoSesion
+);
+
+
 
 /**
  * CU-050
