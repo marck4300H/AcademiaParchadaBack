@@ -1,3 +1,4 @@
+// src/routes/pagos.routes.js
 import express from 'express';
 
 import {
@@ -7,12 +8,13 @@ import {
 } from '../controllers/pagosMercadoPagoController.js';
 
 import { verifyToken } from '../utils/jwt.js';
+import { uploadSingle } from '../middlewares/uploadMemory.js';
 
 const router = express.Router();
 
 /**
  * Middleware opcional:
- * - Si viene Authorization: Bearer <token> válido => setea req.user
+ * - Si viene Authorization: Bearer válido => setea req.user
  * - Si no viene token o viene inválido => req.user = null y continúa
  *
  * Esto permite comprar:
@@ -37,12 +39,12 @@ const optionalAuth = (req, res, next) => {
         email: decoded.email,
         rol: decoded.rol
       };
+      return next();
     } catch (error) {
       // Token inválido/expirado => se trata como no autenticado
       req.user = null;
+      return next();
     }
-
-    return next();
   } catch (error) {
     console.error('Error en optionalAuth (pagos):', error);
     req.user = null;
@@ -54,11 +56,18 @@ const optionalAuth = (req, res, next) => {
  * Crear preferencia / checkout (Checkout Pro)
  * POST /api/pagos/mercadopago/checkout
  *
- * Acepta:
- * - Usuario autenticado (Authorization Bearer TOKEN)
- * - O usuario no autenticado (enviar estudiante {email,password,nombre,apellido,telefono?})
+ * Ahora acepta multipart/form-data para permitir archivo opcional:
+ * - documento: File (opcional)
+ * - resto de campos como Text (tipo_compra, fecha_hora, descripcion_estudiante, etc.)
+ *
+ * También funciona si mandas JSON (sin archivo).
  */
-router.post('/mercadopago/checkout', optionalAuth, crearCheckoutMercadoPago);
+router.post(
+  '/mercadopago/checkout',
+  optionalAuth,
+  uploadSingle('documento'), // opcional
+  crearCheckoutMercadoPago
+);
 
 /**
  * Webhook MercadoPago (NO requiere auth)

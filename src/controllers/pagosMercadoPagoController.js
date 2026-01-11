@@ -4,9 +4,9 @@ import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 
 import { supabase } from '../config/supabase.js';
-import { mpPreference, mpPayment, mpMerchantOrder } from '../config/mercadopago.js';
-
+import { mpPreference, mpPayment } from '../config/mercadopago.js';
 import { asignarProfesorOptimo } from '../utils/asignarProfesor.js';
+
 import {
   notifyClasePersonalizadaAfterSessionCreated,
   notifyCompraCursoAfterPaymentApproved,
@@ -14,6 +14,50 @@ import {
 } from '../services/emailService.js';
 
 dotenv.config();
+
+const BUCKET_DOCUMENTOS = process.env.SUPABASE_BUCKET_DOCUMENTOS || 'pdfs';
+const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25MB (coincide con uploadMemory.js) [file:444]
+
+// Tipos permitidos: amplio a “lo que necesite subir” (pdf, docx, rar, zip, imágenes, etc.)
+const ALLOWED_MIME = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/zip',
+  'application/x-zip-compressed',
+  'application/x-rar-compressed',
+  'application/vnd.rar',
+  'application/octet-stream', // algunos clientes mandan rar/zip así
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'text/plain'
+]);
+
+const safeName = (name = 'archivo') =>
+  String(name)
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-zA-Z0-9._-]/g, '');
+
+const buildDocPath = ({ compraIdTemp, estudianteId, originalname }) => {
+  const base = safeName(originalname || 'documento');
+  const ts = Date.now();
+  return `documentos/clases_personalizadas/${estudianteId || 'anon'}/${compraIdTemp || 'temp'}/${ts}-${base}`;
+};
+
+const uploadToSupabase = async ({ bucket, path, buffer, contentType }) => {
+  const { error: upErr } = await supabase.storage.from(bucket).upload(path, buffer, {
+    contentType,
+    upsert: true
+  });
+  if (upErr) throw upErr;
+
+  const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path);
+  return { publicUrl: pub?.publicUrl || null, path };
+};
 
 /**
  * Extrae el id del webhook de MercadoPago de forma segura.
@@ -43,6 +87,7 @@ const extractMercadoPagoId = (req) => {
   if (typeof raw === 'object') {
     const candidate = raw.id || raw.data?.id || raw.resource;
     if (!candidate) return null;
+
     if (typeof candidate === 'string' && candidate.startsWith('http')) {
       return candidate.split('/').filter(Boolean).pop() || null;
     }
@@ -64,8 +109,8 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       estudiante,
       fecha_hora,
       estudiante_timezone,
-      descripcion_estudiante,
-      documento_url
+      descripcion_estudiante
+      // documento_url ya no es necesario desde frontend; lo seteamos si viene req.file
     } = req.body;
 
     if (!tipo_compra) {
@@ -74,7 +119,6 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
     // 1) Resolver estudiante_id
     let estudiante_id = req.user?.id || null;
-
     let estudianteTZFromDB = null;
 
     if (estudiante_id) {
@@ -101,7 +145,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         .from('usuario')
         .select('id')
         .eq('email', email)
-        .single();
+        .maybeSingle();
 
       if (existente?.id) {
         return res.status(400).json({
@@ -115,17 +159,15 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
       const { data: nuevoEst, error: errNuevo } = await supabase
         .from('usuario')
-        .insert([
-          {
-            email,
-            nombre,
-            apellido,
-            telefono,
-            timezone: timezone || null,
-            password_hash: passwordHash,
-            rol: 'estudiante'
-          }
-        ])
+        .insert([{
+          email,
+          nombre,
+          apellido,
+          telefono: telefono || null,
+          timezone: timezone || null,
+          password_hash: passwordHash,
+          rol: 'estudiante'
+        }])
         .select()
         .single();
 
@@ -143,7 +185,9 @@ export const crearCheckoutMercadoPago = async (req, res) => {
     let metadata = { tipo_compra };
 
     if (tipo_compra === 'curso') {
-      if (!curso_id) return res.status(400).json({ success: false, message: 'curso_id es requerido' });
+      if (!curso_id) {
+        return res.status(400).json({ success: false, message: 'curso_id es requerido' });
+      }
 
       const { data: curso, error } = await supabase
         .from('curso')
@@ -151,7 +195,9 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         .eq('id', curso_id)
         .single();
 
-      if (error || !curso) return res.status(404).json({ success: false, message: 'Curso no encontrado' });
+      if (error || !curso) {
+        return res.status(404).json({ success: false, message: 'Curso no encontrado' });
+      }
 
       titulo = `Curso: ${curso.nombre}`;
       monto_total = Number(curso.precio);
@@ -167,21 +213,15 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
       const { data: clase, error } = await supabase
         .from('clase_personalizada')
-        .select(
-          `
-          id,
-          precio,
-          duracion_horas,
-          asignatura_id,
-          asignatura:asignatura_id (id,nombre)
-        `
-        )
+        .select('id,precio,duracion_horas,asignatura_id, asignatura:asignatura_id (id,nombre)')
         .eq('id', clase_personalizada_id)
         .single();
 
-      if (error || !clase) return res.status(404).json({ success: false, message: 'Clase personalizada no encontrada' });
+      if (error || !clase) {
+        return res.status(404).json({ success: false, message: 'Clase personalizada no encontrada' });
+      }
 
-      // ✅ No tocar franjas/validación (tu lógica)
+      // ✅ No tocar franjas/validación
       const asignacion = await asignarProfesorOptimo(
         clase.asignatura_id,
         String(fecha_hora),
@@ -205,10 +245,14 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         fecha_hora: String(fecha_hora),
         estudiante_timezone: estudianteTimeZone,
         descripcion_estudiante: descripcion_estudiante || null,
-        documento_url: documento_url || null,
+
+        // documento_url se setea abajo si viene req.file
+        documento_url: null,
+
         profesor_id: asignacion.profesor?.id || null,
         franja_horaria_ids: asignacion.franjasUtilizadas || [],
         profesor_timezone: asignacion.profesorTimeZone || null,
+
         duracion_horas: clase.duracion_horas,
         asignatura_id: clase.asignatura_id,
         asignatura_nombre: clase?.asignatura?.nombre || null
@@ -228,7 +272,9 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         .eq('id', clase_personalizada_id)
         .single();
 
-      if (error || !clase) return res.status(404).json({ success: false, message: 'Clase personalizada no encontrada' });
+      if (error || !clase) {
+        return res.status(404).json({ success: false, message: 'Clase personalizada no encontrada' });
+      }
 
       const horas = Number(cantidad_horas);
       titulo = `Paquete de horas (${horas}h)`;
@@ -266,9 +312,38 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
     if (errCompra) throw errCompra;
 
+    // 3.1) Si viene archivo y es clase_personalizada, subirlo y guardarlo en metadata
+    if (tipo_compra === 'clase_personalizada' && req.file) {
+      if (req.file.size > MAX_FILE_BYTES) {
+        return res.status(400).json({ success: false, message: 'Archivo demasiado grande (máx 25MB).' });
+      }
+
+      const mimetype = req.file.mimetype || 'application/octet-stream';
+      if (!ALLOWED_MIME.has(mimetype)) {
+        return res.status(400).json({ success: false, message: `Tipo de archivo no permitido: ${mimetype}` });
+      }
+
+      const path = buildDocPath({
+        compraIdTemp: compra.id,
+        estudianteId: estudiante_id,
+        originalname: req.file.originalname
+      });
+
+      const up = await uploadToSupabase({
+        bucket: BUCKET_DOCUMENTOS,
+        path,
+        buffer: req.file.buffer,
+        contentType: mimetype
+      });
+
+      // guardar url en metadata para que el webhook la use
+      metadata = { ...metadata, documento_url: up.publicUrl };
+    }
+
     // 4) Preferencia MP
     const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
-    const BACKEND_PUBLIC_URL = process.env.BACKEND_PUBLIC_URL || `http://localhost:${process.env.PORT || 5000}`;
+    const BACKEND_PUBLIC_URL =
+      process.env.BACKEND_PUBLIC_URL || `http://localhost:${process.env.PORT || 5000}`;
     const notification_url = `${BACKEND_PUBLIC_URL}/api/pagos/mercadopago/webhook`;
 
     const preferenceBody = {
@@ -286,6 +361,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
     const mpResp = await mpPreference.create({ body: preferenceBody });
     const preference_id = mpResp?.id || null;
 
+    // 5) Guardar mp_preference_id y mp_raw en compra
     const { error: errUpd } = await supabase
       .from('compra')
       .update({ mp_preference_id: preference_id, mp_raw: mpResp })
@@ -320,8 +396,8 @@ export const webhookMercadoPago = async (req, res) => {
 
     if (!topic || !id) return res.status(200).send('OK');
 
+    // idempotencia
     const eventId = `${topic}:${id}`;
-
     const { data: yaProcesado } = await supabase
       .from('webhook_evento_pago')
       .select('id')
@@ -331,24 +407,18 @@ export const webhookMercadoPago = async (req, res) => {
 
     if (yaProcesado?.id) return res.status(200).send('OK');
 
-    await supabase.from('webhook_evento_pago').insert([
-      {
-        proveedor_pago: 'mercadopago',
-        event_id: eventId,
-        tipo_evento: topic,
-        payload: { query: req.query, body: req.body, headers: req.headers }
-      }
-    ]);
+    await supabase.from('webhook_evento_pago').insert([{
+      proveedor_pago: 'mercadopago',
+      event_id: eventId,
+      tipo_evento: topic,
+      payload: { query: req.query, body: req.body, headers: req.headers }
+    }]);
 
-    // Si llegan ambos webhooks, no rompas nada
-    if (topic === 'merchant_order') {
-      // Opcional: no consultar merchant_order para evitar ruido/errores
-      return res.status(200).send('OK');
-    }
+    // merchant_order lo ignoras (como ya haces)
+    if (topic === 'merchant_order') return res.status(200).send('OK');
 
     if (topic === 'payment' || topic === 'payment.updated') {
       const paymentId = String(id || '').trim();
-
       if (!isNumericId(paymentId)) return res.status(200).send('OK');
 
       const payment = await mpPayment.get({ id: paymentId });
@@ -389,35 +459,27 @@ export const webhookMercadoPago = async (req, res) => {
 
       if (errCompra || !compra?.id) return res.status(200).send('OK');
 
-      // ===============================
-      // ✅ CURSO: solo llamar emailService
-      // ===============================
+      // CURSO
       if (compra.tipo_compra === 'curso' && compra.curso_id) {
         try {
-          const notifyResult = await notifyCompraCursoAfterPaymentApproved({ compraId: compra.id });
-          console.log('✅ notifyCompraCursoAfterPaymentApproved result:', { compraId: compra.id, notifyResult });
+          await notifyCompraCursoAfterPaymentApproved({ compraId: compra.id });
         } catch (e) {
           console.error('❌ Error notificando curso (emailService):', e?.message || e);
         }
         return res.status(200).send('OK');
       }
 
-      // ===============================
-      // ✅ PAQUETE HORAS: solo llamar emailService
-      // ===============================
+      // PAQUETE HORAS
       if (compra.tipo_compra === 'paquete_horas') {
         try {
-          const notifyResult = await notifyPaqueteHorasAfterPaymentApproved({ compraId: compra.id });
-          console.log('✅ notifyPaqueteHorasAfterPaymentApproved result:', { compraId: compra.id, notifyResult });
+          await notifyPaqueteHorasAfterPaymentApproved({ compraId: compra.id });
         } catch (e) {
           console.error('❌ Error notificando paquete_horas (emailService):', e?.message || e);
         }
         return res.status(200).send('OK');
       }
 
-      // ===============================
-      // CLASE PERSONALIZADA (se mantiene igual)
-      // ===============================
+      // CLASE PERSONALIZADA
       if (compra.tipo_compra === 'clase_personalizada' && compra.clase_personalizada_id) {
         const { data: sesionExist } = await supabase
           .from('sesion_clase')
@@ -446,18 +508,16 @@ export const webhookMercadoPago = async (req, res) => {
 
         const { data: sesionCreada, error: sesionError } = await supabase
           .from('sesion_clase')
-          .insert([
-            {
-              compra_id: compra.id,
-              profesor_id: profesorId,
-              descripcion_estudiante: descripcionEst,
-              documento_url: documentoUrl,
-              fecha_hora: new Date(fechaHora).toISOString(),
-              link_meet: null,
-              estado: 'programada',
-              franja_horaria_ids: franjaIds
-            }
-          ])
+          .insert([{
+            compra_id: compra.id,
+            profesor_id: profesorId,
+            descripcion_estudiante: descripcionEst,
+            documento_url: documentoUrl,
+            fecha_hora: new Date(fechaHora).toISOString(),
+            link_meet: null,
+            estado: 'programada',
+            franja_horaria_ids: franjaIds
+          }])
           .select()
           .single();
 
@@ -466,22 +526,14 @@ export const webhookMercadoPago = async (req, res) => {
           return res.status(200).send('OK');
         }
 
-        // ✅ ÚNICO LLAMADO: emailService consulta todo
         try {
-          const notifyResult = await notifyClasePersonalizadaAfterSessionCreated({ sesionId: sesionCreada.id });
-          console.log('✅ notifyClasePersonalizadaAfterSessionCreated result:', {
-            sesionId: sesionCreada.id,
-            notifyResult
-          });
+          await notifyClasePersonalizadaAfterSessionCreated({ sesionId: sesionCreada.id });
         } catch (e) {
-          // No devolver 500 a MP para no causar reintentos infinitos
           console.error('❌ Error notificando clase personalizada (emailService):', e?.message || e);
         }
 
         return res.status(200).send('OK');
       }
-
-      return res.status(200).send('OK');
     }
 
     return res.status(200).send('OK');
