@@ -794,3 +794,143 @@ export const notifyPaqueteHorasAfterPaymentApproved = async ({ compraId }) => {
   console.log('✅ notifyPaqueteHorasAfterPaymentApproved final', { compraId: compra.id, result });
   return result;
 };
+// ============================================
+// Paquete horas: notificar SOLO profesor
+// (cuando se agenda una sesión usando horas)
+// ============================================
+
+export const sendPaqueteHorasProfesorAsignadoEmail = async ({
+  profesorEmail,
+  sesionId,
+  asignaturaNombre,
+  fechaHoraIso,
+  duracionHoras,
+  profesorTimeZone,
+  estudiante,
+}) => {
+  const whenProfesor = formatDateTimeInTZ(fechaHoraIso, profesorTimeZone || DEFAULT_TZ);
+
+  return sendEmailStrict(
+    {
+      to: profesorEmail,
+      subject: 'Nueva clase asignada (Paquete de horas) - Parche Académico',
+      html: wrapHtml(`
+        <h2>Clase asignada ✅</h2>
+        <p>Se te acaba de asignar una clase usando un <strong>paquete de horas</strong>.</p>
+        <p><strong>ID sesión:</strong> ${safe(sesionId)}</p>
+        <p><strong>Asignatura:</strong> ${safe(asignaturaNombre)}</p>
+        <p><strong>Fecha y hora (tu zona):</strong> ${safe(whenProfesor)}</p>
+        <p><strong>Duración:</strong> ${safe(duracionHoras)} hora(s)</p>
+        <p>👉 Por favor crea el link de Google Meet y regístralo en el sistema.</p>
+        <hr/>
+        <h3>Datos del estudiante</h3>
+        <p><strong>Nombre:</strong> ${safe(estudiante?.nombre)} ${safe(estudiante?.apellido)}</p>
+        <p><strong>Email:</strong> ${safe(estudiante?.email)}</p>
+        <p><strong>Teléfono:</strong> ${safe(estudiante?.telefono)}</p>
+        <p><strong>Timezone:</strong> ${safe(estudiante?.timezone)}</p>
+      `),
+    },
+    2
+  );
+};
+
+/**
+ * Orquestador:
+ * - Recibe sesionId
+ * - Verifica que sea de compra tipo paquete_horas
+ * - Busca profesor + estudiante + asignatura
+ * - Envía correo SOLO al profesor
+ */
+export const notifyProfesorAfterPaqueteHorasSessionCreated = async ({ sesionId }) => {
+  const result = {
+    profesor: { ok: false, error: null, to: null, resendId: null },
+  };
+
+  // 1) Sesión
+  const { data: sesion, error: errSesion } = await supabase
+    .from('sesion_clase')
+    .select('id,compra_id,profesor_id,fecha_hora,franja_horaria_ids,estado')
+    .eq('id', sesionId)
+    .single();
+
+  if (errSesion || !sesion?.id) {
+    throw new Error(`notifyProfesorAfterPaqueteHorasSessionCreated: sesion_clase no encontrada (${sesionId})`);
+  }
+
+  // 2) Compra (validar que sea paquete_horas)
+  const { data: compra, error: errCompra } = await supabase
+    .from('compra')
+    .select('id,tipo_compra,estudiante_id,clase_personalizada_id')
+    .eq('id', sesion.compra_id)
+    .single();
+
+  if (errCompra || !compra?.id) {
+    throw new Error(`notifyProfesorAfterPaqueteHorasSessionCreated: compra no encontrada (${sesion.compra_id})`);
+  }
+
+  if (compra.tipo_compra !== 'paquete_horas') {
+    // No aplica (evita correos en otros flujos)
+    return result;
+  }
+
+  // 3) Profesor
+  const { data: profesor } = await supabase
+    .from('usuario')
+    .select('id,nombre,apellido,email,timezone')
+    .eq('id', sesion.profesor_id)
+    .single();
+
+  // 4) Estudiante
+  const { data: estudiante } = await supabase
+    .from('usuario')
+    .select('id,nombre,apellido,email,telefono,timezone')
+    .eq('id', compra.estudiante_id)
+    .single();
+
+  // 5) Asignatura (desde clase_personalizada)
+  let asignaturaNombre = 'Clase personalizada';
+  try {
+    if (compra.clase_personalizada_id) {
+      const { data: clase } = await supabase
+        .from('clase_personalizada')
+        .select('id,asignatura:asignatura_id(id,nombre)')
+        .eq('id', compra.clase_personalizada_id)
+        .single();
+
+      asignaturaNombre = clase?.asignatura?.nombre || asignaturaNombre;
+    }
+  } catch (e) {
+    console.error('⚠️ No se pudo leer asignatura para notificación paquete:', e?.message || e);
+  }
+
+  const profesorEmail = normalizeEmail(profesor?.email);
+  const profesorTZ = profesor?.timezone || DEFAULT_TZ;
+  const duracionHoras = Array.isArray(sesion?.franja_horaria_ids) ? sesion.franja_horaria_ids.length : null;
+
+  try {
+    if (!profesorEmail) throw new Error('Profesor sin email en BD.');
+
+    const sent = await sendPaqueteHorasProfesorAsignadoEmail({
+      profesorEmail,
+      sesionId: sesion.id,
+      asignaturaNombre,
+      fechaHoraIso: sesion.fecha_hora,
+      duracionHoras,
+      profesorTimeZone: profesorTZ,
+      estudiante,
+    });
+
+    result.profesor = {
+      ok: true,
+      error: null,
+      to: sent?.to ?? profesorEmail,
+      resendId: sent?.resendId ?? null,
+    };
+  } catch (e) {
+    result.profesor.error = e?.message || String(e);
+    result.profesor.to = profesorEmail;
+    console.error('❌ notify paquete: fallo profesor', { sesionId, error: result.profesor.error });
+  }
+
+  return result;
+};
