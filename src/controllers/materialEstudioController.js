@@ -63,6 +63,32 @@ async function assertProfesorCanManageSesion({ sesionClaseId, user }) {
 }
 
 /**
+ * Validación acceso estudiante a un curso (por inscripción).
+ * - Admin/Profesor: permitido
+ * - Estudiante: requiere inscripcion_curso
+ */
+async function assertEstudianteTieneInscripcionCurso({ cursoId, user }) {
+  if (!user) throw new Error('No autenticado');
+
+  if (user.rol !== 'estudiante') return;
+
+  const { data: insc, error: inscErr } = await supabase
+    .from('inscripcion_curso')
+    .select('id')
+    .eq('estudiante_id', user.id)
+    .eq('curso_id', cursoId)
+    .maybeSingle();
+
+  if (inscErr) throw inscErr;
+
+  if (!insc?.id) {
+    const err = new Error('No tienes acceso a este curso. Debes comprarlo primero.');
+    err.statusCode = 403;
+    throw err;
+  }
+}
+
+/**
  * POST /api/material-estudio
  * Roles: administrador, profesor
  * multipart/form-data:
@@ -161,9 +187,8 @@ export const createMaterialEstudio = async (req, res) => {
 /**
  * GET /api/material-estudio
  * query: curso_id | sesion_clase_id
- * Roles: público (si quieres) o autenticado (recomendado)
  *
- * Nota: si quieres control de acceso por compra/inscripción, se agrega después.
+ * Nota: aquí ya metemos control para estudiante cuando sea por curso_id.
  */
 export const listMaterialEstudio = async (req, res) => {
   try {
@@ -171,6 +196,11 @@ export const listMaterialEstudio = async (req, res) => {
 
     if (!curso_id && !sesion_clase_id) {
       return res.status(400).json({ success: false, message: 'Debes enviar curso_id o sesion_clase_id' });
+    }
+
+    // Para este caso: descarga/listado para cursos
+    if (curso_id) {
+      await assertEstudianteTieneInscripcionCurso({ cursoId: curso_id, user: req.user });
     }
 
     let query = supabase
@@ -187,7 +217,60 @@ export const listMaterialEstudio = async (req, res) => {
     return res.status(200).json({ success: true, data: { materiales: data || [] } });
   } catch (error) {
     console.error('listMaterialEstudio:', error);
-    return res.status(500).json({ success: false, message: 'Error interno', error: error.message });
+    const status = error.statusCode || 500;
+    return res.status(status).json({ success: false, message: error.message || 'Error interno', error: error.message });
+  }
+};
+
+/**
+ * GET /api/material-estudio/:id/descargar
+ * Roles: estudiante, administrador, profesor
+ *
+ * Descarga para CURSOS:
+ * - material debe tener curso_id
+ * - estudiante debe estar inscrito en el curso
+ * Respuesta: JSON con url del archivo
+ */
+export const descargarMaterialEstudio = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: material, error: mErr } = await supabase
+      .from('material_estudio')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (mErr || !material) {
+      return res.status(404).json({ success: false, message: 'Material no encontrado' });
+    }
+
+    if (!material.curso_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Este material no pertenece a un curso (curso_id requerido para descargar por curso).'
+      });
+    }
+
+    await assertEstudianteTieneInscripcionCurso({ cursoId: material.curso_id, user: req.user });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        id: material.id,
+        titulo: material.titulo,
+        tipo: material.tipo,
+        url: material.archivo_url
+      }
+    });
+  } catch (error) {
+    console.error('descargarMaterialEstudio:', error);
+    const status = error.statusCode || 500;
+    return res.status(status).json({
+      success: false,
+      message: error.message || 'Error descargando material',
+      error: error.message
+    });
   }
 };
 

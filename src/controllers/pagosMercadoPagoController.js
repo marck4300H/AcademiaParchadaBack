@@ -453,9 +453,10 @@ export const webhookMercadoPago = async (req, res) => {
 
       const { data: compra, error: errCompra } = await supabase
         .from('compra')
-        .select('id,tipo_compra,curso_id,clase_personalizada_id,mp_raw')
+        .select('id, estudiante_id, tipo_compra, curso_id, clase_personalizada_id, mp_raw')
         .eq('id', external_reference)
         .single();
+
 
       if (errCompra || !compra?.id) return res.status(200).send('OK');
 
