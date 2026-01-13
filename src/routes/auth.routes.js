@@ -1,5 +1,5 @@
 import express from 'express';
-import { register, login, logout, getMe } from '../controllers/authController.js';
+import { register, login, logout, getMe, loginGoogle } from '../controllers/authController.js';
 import { registerValidator, loginValidator, validate } from '../validators/authValidator.js';
 import { authenticate } from '../middlewares/auth.js';
 
@@ -18,6 +18,14 @@ router.post('/register', registerValidator, validate, register);
  * @access  Public
  */
 router.post('/login', loginValidator, validate, login);
+
+/**
+ * @route   POST /api/auth/google
+ * @desc    Login/Registro con Google (solo estudiante) usando Supabase access_token
+ * @access  Public
+ * Body: { access_token }
+ */
+router.post('/google', loginGoogle);
 
 /**
  * @route   POST /api/auth/logout
