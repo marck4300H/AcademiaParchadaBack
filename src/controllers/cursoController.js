@@ -4,6 +4,51 @@ import { supabase } from '../config/supabase.js';
 import { uploadToSupabaseBucket, buildImagePath, safeName } from '../services/storageService.js';
 
 /**
+ * Helper: validar/consultar inscripción de estudiante a un curso.
+ * - Admin/Profesor: no requiere inscripción
+ * - Estudiante: requiere inscripcion_curso
+ */
+async function assertEstudianteTieneInscripcionCurso({ cursoId, user }) {
+  if (!user) {
+    const err = new Error('No se proporcionó token de autenticación');
+    err.statusCode = 401;
+    throw err;
+  }
+
+  if (user.rol !== 'estudiante') return;
+
+  const { data: insc, error: inscErr } = await supabase
+    .from('inscripcion_curso')
+    .select('id')
+    .eq('estudiante_id', user.id)
+    .eq('curso_id', cursoId)
+    .maybeSingle();
+
+  if (inscErr) throw inscErr;
+
+  if (!insc?.id) {
+    const err = new Error('No tienes acceso a este curso. Debes comprarlo primero.');
+    err.statusCode = 403;
+    throw err;
+  }
+}
+
+async function getInscritoFlag({ cursoId, user }) {
+  if (!user) return false;
+  if (user.rol !== 'estudiante') return true; // para prof/admin lo tratamos como "tiene acceso"
+
+  const { data: insc, error } = await supabase
+    .from('inscripcion_curso')
+    .select('id')
+    .eq('estudiante_id', user.id)
+    .eq('curso_id', cursoId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return Boolean(insc?.id);
+}
+
+/**
  * CU-021: Crear Curso
  * POST /api/cursos
  * Rol: Administrador
@@ -174,6 +219,7 @@ export const createCurso = async (req, res) => {
         originalname: safeName(req.file.originalname)
       });
 
+      // Nota: en tu proyecto se usa bucket 'pdfs' para imágenes también
       const up = await uploadToSupabaseBucket({
         bucket: 'pdfs',
         fileBuffer: req.file.buffer,
@@ -194,7 +240,6 @@ export const createCurso = async (req, res) => {
 
       if (upErr) throw upErr;
 
-      // devolver actualizado
       return res.status(201).json({
         success: true,
         message: 'Curso creado exitosamente',
@@ -242,23 +287,19 @@ export const listCursos = async (req, res) => {
 
     const offset = (Number(page) - 1) * Number(limit);
 
-    // Construir query base
     let query = supabase
       .from('curso')
       .select('*', { count: 'exact' })
       .order('created_at', { ascending: false });
 
-    // Filtros
     if (estado) query = query.eq('estado', estado);
     if (tipo) query = query.eq('tipo', tipo);
     if (asignatura_id) query = query.eq('asignatura_id', asignatura_id);
     if (profesor_id) query = query.eq('profesor_id', profesor_id);
 
-    // CU-060: filtros precio
     if (minPrecio !== undefined && minPrecio !== '') query = query.gte('precio', Number(minPrecio));
     if (maxPrecio !== undefined && maxPrecio !== '') query = query.lte('precio', Number(maxPrecio));
 
-    // Paginación
     query = query.range(offset, offset + parseInt(limit) - 1);
 
     const { data: cursos, error, count } = await query;
@@ -268,7 +309,6 @@ export const listCursos = async (req, res) => {
       throw error;
     }
 
-    // Obtener relaciones para cada curso
     const cursosConRelaciones = await Promise.all(
       (cursos || []).map((curso) => obtenerCursoConRelaciones(curso.id))
     );
@@ -330,9 +370,78 @@ export const getCursoById = async (req, res) => {
 };
 
 /**
+ * CU-035: Contenido del curso (unificado)
+ * GET /api/cursos/:cursoId/contenido
+ */
+export const getCursoContenido = async (req, res) => {
+  try {
+    const { cursoId } = req.params;
+
+    const curso = await obtenerCursoConRelaciones(cursoId);
+    if (!curso) {
+      return res.status(404).json({ success: false, message: 'Curso no encontrado' });
+    }
+
+    // inscrito true/false (para UI)
+    const inscrito = await getInscritoFlag({ cursoId, user: req.user });
+
+    // si es estudiante y no inscrito => 403 (comportamiento igual al que ya estaban esperando)
+    await assertEstudianteTieneInscripcionCurso({ cursoId, user: req.user });
+
+    const { data: secciones, error: secErr } = await supabase
+      .from('seccion_curso')
+      .select('*')
+      .eq('curso_id', cursoId)
+      .order('orden', { ascending: true });
+
+    if (secErr) throw secErr;
+
+    const { data: materialesCompletos, error: matErr } = await supabase
+      .from('material_estudio')
+      .select('*')
+      .eq('curso_id', cursoId)
+      .order('created_at', { ascending: false });
+
+    if (matErr) throw matErr;
+
+    // “limpio” para frontend
+    const materiales = (materialesCompletos || []).map(m => ({
+      id: m.id,
+      curso_id: m.curso_id,
+      titulo: m.titulo,
+      tipo: m.tipo,
+      url: m.archivo_url,
+      created_at: m.created_at
+    }));
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        inscrito,
+        curso,
+        secciones: secciones || [],
+        materiales, // limpio
+        materiales_completos: materialesCompletos || [] // completo
+      }
+    });
+  } catch (error) {
+    console.error('getCursoContenido:', error);
+    const status = error.statusCode || 500;
+    return res.status(status).json({
+      success: false,
+      message: error.message || 'Error obteniendo contenido del curso',
+      error: error.message
+    });
+  }
+};
+
+/**
  * CU-024: Editar Curso
  * PUT /api/cursos/:id
  * Rol: Administrador
+ *
+ * Soporta multipart/form-data con:
+ * - image (opcional)
  */
 export const updateCurso = async (req, res) => {
   try {
@@ -353,7 +462,6 @@ export const updateCurso = async (req, res) => {
       franja_horaria_ids
     } = req.body;
 
-    // Verificar que el curso existe
     const { data: cursoExistente, error: cursoError } = await supabase
       .from('curso')
       .select('*')
@@ -367,30 +475,23 @@ export const updateCurso = async (req, res) => {
       });
     }
 
-    // Construir objeto de actualización
     const updateData = {};
 
     if (nombre !== undefined) updateData.nombre = nombre;
     if (descripcion !== undefined) updateData.descripcion = descripcion;
 
     if (precio !== undefined) {
-      if (precio <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'El precio debe ser mayor a 0'
-        });
+      if (Number(precio) <= 0) {
+        return res.status(400).json({ success: false, message: 'El precio debe ser mayor a 0' });
       }
-      updateData.precio = precio;
+      updateData.precio = Number(precio);
     }
 
     if (duracion_horas !== undefined) {
-      if (duracion_horas <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'La duración en horas debe ser mayor a 0'
-        });
+      if (Number(duracion_horas) <= 0) {
+        return res.status(400).json({ success: false, message: 'La duración en horas debe ser mayor a 0' });
       }
-      updateData.duracion_horas = duracion_horas;
+      updateData.duracion_horas = Number(duracion_horas);
     }
 
     if (tipo !== undefined) {
@@ -417,21 +518,21 @@ export const updateCurso = async (req, res) => {
       const tipoActual = updateData.tipo_pago_profesor || cursoExistente.tipo_pago_profesor;
 
       if (tipoActual === 'porcentaje') {
-        if (valor_pago_profesor < 0 || valor_pago_profesor > 100) {
+        if (Number(valor_pago_profesor) < 0 || Number(valor_pago_profesor) > 100) {
           return res.status(400).json({
             success: false,
             message: 'El porcentaje debe estar entre 0 y 100'
           });
         }
       } else if (tipoActual === 'monto_fijo') {
-        if (valor_pago_profesor < 0) {
+        if (Number(valor_pago_profesor) < 0) {
           return res.status(400).json({
             success: false,
             message: 'El monto fijo debe ser mayor o igual a 0'
           });
         }
       }
-      updateData.valor_pago_profesor = valor_pago_profesor;
+      updateData.valor_pago_profesor = Number(valor_pago_profesor);
     }
 
     if (estado !== undefined) {
@@ -450,14 +551,36 @@ export const updateCurso = async (req, res) => {
     if (profesor_id !== undefined) updateData.profesor_id = profesor_id;
     if (franja_horaria_ids !== undefined) updateData.franja_horaria_ids = franja_horaria_ids;
 
-    // Validar fechas si se están actualizando
-    const fechaInicioFinal = updateData.fecha_inicio || cursoExistente.fecha_inicio;
-    const fechaFinFinal = updateData.fecha_fin || cursoExistente.fecha_fin;
+    // Si viene imagen, subir y setear imagen_url/path correctamente
+    if (req.file) {
+      const allowed = new Set(['image/png', 'image/jpeg', 'image/webp']);
+      if (!allowed.has(req.file.mimetype)) {
+        return res.status(400).json({
+          success: false,
+          message: `Tipo de imagen no permitido: ${req.file.mimetype}`
+        });
+      }
 
-    if (fechaInicioFinal && fechaFinFinal) {
-      const fechaInicioDate = new Date(fechaInicioFinal);
-      const fechaFinDate = new Date(fechaFinFinal);
+      const path = buildImagePath({
+        entity: 'curso',
+        id, // IMPORTANTÍSIMO: aquí nunca debe ir undefined
+        originalname: safeName(req.file.originalname)
+      });
 
+      const up = await uploadToSupabaseBucket({
+        bucket: 'pdfs',
+        fileBuffer: req.file.buffer,
+        mimetype: req.file.mimetype,
+        path
+      });
+
+      updateData.imagen_url = up.publicUrl;
+      updateData.imagen_path = up.path;
+    }
+
+    if (fecha_inicio && fecha_fin) {
+      const fechaInicioDate = new Date(fecha_inicio);
+      const fechaFinDate = new Date(fecha_fin);
       if (fechaFinDate <= fechaInicioDate) {
         return res.status(400).json({
           success: false,
@@ -466,15 +589,13 @@ export const updateCurso = async (req, res) => {
       }
     }
 
-    // Si no hay campos para actualizar
-    if (Object.keys(updateData).length === 0) {
+    if (Object.keys(updateData).length === 0 && !req.file) {
       return res.status(400).json({
         success: false,
         message: 'No hay campos para actualizar'
       });
     }
 
-    // Actualizar curso
     updateData.updated_at = new Date().toISOString();
 
     const { error } = await supabase
@@ -487,7 +608,6 @@ export const updateCurso = async (req, res) => {
       throw error;
     }
 
-    // Obtener curso actualizado con relaciones
     const cursoActualizado = await obtenerCursoConRelaciones(id);
 
     res.json({
@@ -516,7 +636,6 @@ export const deleteCurso = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Verificar que el curso existe
     const { data: cursoExistente, error: cursoError } = await supabase
       .from('curso')
       .select('id')
@@ -530,7 +649,6 @@ export const deleteCurso = async (req, res) => {
       });
     }
 
-    // Verificar que no tenga compras asociadas
     const { data: compras, error: comprasError } = await supabase
       .from('compra')
       .select('id')
@@ -549,7 +667,6 @@ export const deleteCurso = async (req, res) => {
       });
     }
 
-    // Verificar que no tenga inscripciones
     const { data: inscripciones, error: inscripcionesError } = await supabase
       .from('inscripcion_curso')
       .select('id')
@@ -568,7 +685,6 @@ export const deleteCurso = async (req, res) => {
       });
     }
 
-    // Eliminar curso
     const { error } = await supabase
       .from('curso')
       .delete()
@@ -597,7 +713,6 @@ export const deleteCurso = async (req, res) => {
  * Función auxiliar para obtener un curso con sus relaciones
  */
 async function obtenerCursoConRelaciones(cursoId) {
-  // Obtener curso base
   const { data: curso, error: cursoError } = await supabase
     .from('curso')
     .select(`
@@ -622,7 +737,6 @@ async function obtenerCursoConRelaciones(cursoId) {
     return null;
   }
 
-  // Obtener franjas horarias si existen
   if (curso.franja_horaria_ids && curso.franja_horaria_ids.length > 0) {
     const { data: franjas, error: franjasError } = await supabase
       .from('franja_horaria')

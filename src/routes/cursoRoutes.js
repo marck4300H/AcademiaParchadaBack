@@ -6,7 +6,8 @@ import {
   getCursoById,
   updateCurso,
   deleteCurso,
-  buscarCursos
+  buscarCursos,
+  getCursoContenido
 } from '../controllers/cursoController.js';
 
 import { authenticate, authorize } from '../middlewares/auth.js';
@@ -36,9 +37,33 @@ router.get('/', listCursos);
  */
 router.get('/buscar', buscarCursos);
 
+/**
+ * CU-035: Contenido del curso (unificado)
+ * GET /api/cursos/:cursoId/contenido
+ * Auth: estudiante/profesor/administrador
+ */
+router.get(
+  '/:cursoId/contenido',
+  authenticate,
+  authorize('administrador', 'profesor', 'estudiante'),
+  getCursoContenido
+);
+
 router.get('/:id', getCursoById);
 
-router.put('/:id', authenticate, authorize('administrador'), updateCurso);
+/**
+ * PUT /api/cursos/:id
+ * Admin
+ * multipart/form-data opcional:
+ * - image: File (opcional)
+ */
+router.put(
+  '/:id',
+  authenticate,
+  authorize('administrador'),
+  uploadSingle('image'),
+  updateCurso
+);
 
 router.delete('/:id', authenticate, authorize('administrador'), deleteCurso);
 
