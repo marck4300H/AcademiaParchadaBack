@@ -2,7 +2,12 @@
 import express from 'express';
 import { authenticate, authorize } from '../middlewares/auth.js';
 import { uploadSingle } from '../middlewares/uploadMemory.js';
-import { createMaterialEstudio, listMaterialEstudio, deleteMaterialEstudio } from '../controllers/materialEstudioController.js';
+import {
+  createMaterialEstudio,
+  listMaterialEstudio,
+  deleteMaterialEstudio,
+  descargarMaterialEstudio
+} from '../controllers/materialEstudioController.js';
 
 const router = express.Router();
 
@@ -16,12 +21,20 @@ router.post(
 );
 
 // Listar material (por curso o sesión)
-// (por ahora protegido para evitar exposición; luego se puede abrir con control por compra)
+// protegido; y si es estudiante + curso_id, valida inscripción dentro del controller
 router.get(
   '/',
   authenticate,
   authorize('administrador', 'profesor', 'estudiante'),
   listMaterialEstudio
+);
+
+// Descargar material (estudiante/admin/profesor)
+router.get(
+  '/:id/descargar',
+  authenticate,
+  authorize('administrador', 'profesor', 'estudiante'),
+  descargarMaterialEstudio
 );
 
 // Eliminar material (admin/profesor)
