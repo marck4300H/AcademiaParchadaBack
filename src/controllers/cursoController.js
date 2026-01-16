@@ -385,9 +385,10 @@ export const getCursoContenido = async (req, res) => {
     // inscrito true/false (para UI)
     const inscrito = await getInscritoFlag({ cursoId, user: req.user });
 
-    // si es estudiante y no inscrito => 403 (comportamiento igual al que ya estaban esperando)
+    // si es estudiante y no inscrito => 403
     await assertEstudianteTieneInscripcionCurso({ cursoId, user: req.user });
 
+    // Secciones (pregrabado)
     const { data: secciones, error: secErr } = await supabase
       .from('seccion_curso')
       .select('*')
@@ -396,6 +397,7 @@ export const getCursoContenido = async (req, res) => {
 
     if (secErr) throw secErr;
 
+    // Materiales
     const { data: materialesCompletos, error: matErr } = await supabase
       .from('material_estudio')
       .select('*')
@@ -404,7 +406,6 @@ export const getCursoContenido = async (req, res) => {
 
     if (matErr) throw matErr;
 
-    // “limpio” para frontend
     const materiales = (materialesCompletos || []).map(m => ({
       id: m.id,
       curso_id: m.curso_id,
@@ -414,6 +415,19 @@ export const getCursoContenido = async (req, res) => {
       created_at: m.created_at
     }));
 
+    // NUEVO: sesiones (solo para cursos grupales)
+    let sesiones = [];
+    if (curso.tipo === 'grupal') {
+      const { data: ses, error: sesErr } = await supabase
+        .from('curso_sesion')
+        .select('id, curso_id, fecha_hora, duracion_min, link_meet, estado, created_at, updated_at')
+        .eq('curso_id', cursoId)
+        .order('fecha_hora', { ascending: true });
+
+      if (sesErr) throw sesErr;
+      sesiones = ses || [];
+    }
+
     return res.status(200).json({
       success: true,
       data: {
@@ -421,7 +435,8 @@ export const getCursoContenido = async (req, res) => {
         curso,
         secciones: secciones || [],
         materiales, // limpio
-        materiales_completos: materialesCompletos || [] // completo
+        materiales_completos: materialesCompletos || [], // completo
+        sesiones // NUEVO
       }
     });
   } catch (error) {
@@ -434,6 +449,7 @@ export const getCursoContenido = async (req, res) => {
     });
   }
 };
+
 
 /**
  * CU-024: Editar Curso

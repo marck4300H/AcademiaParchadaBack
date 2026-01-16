@@ -80,12 +80,10 @@ const sendEmailStrict = async ({ to, subject, html, bcc = null }, retries = 2) =
 
       const resp = await resend.emails.send(payload);
 
-      // Resend suele responder { data, error }
       if (resp?.error) {
         throw new Error(resp.error?.message || JSON.stringify(resp.error));
       }
 
-      // id puede venir como resp.data.id (o resp.id según versión)
       const resendId = resp?.data?.id ?? resp?.id ?? null;
 
       if (EMAIL_DEBUG) {
@@ -93,7 +91,6 @@ const sendEmailStrict = async ({ to, subject, html, bcc = null }, retries = 2) =
         if (!resendId) console.log('ℹ️ Resend raw response (no id)', resp);
       }
 
-      // Importante: NO fallar si no hay id (para no duplicar por reintentos)
       return { resendId, to: toNorm };
     } catch (err) {
       lastErr = err;
@@ -292,7 +289,6 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
 
   const adminEmail = normalizeEmail(await getAdminEmail());
 
-  // 1) Sesión
   const { data: sesion, error: errSesion } = await supabase
     .from('sesion_clase')
     .select('id,compra_id,profesor_id,fecha_hora')
@@ -305,7 +301,6 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
     );
   }
 
-  // 2) Compra
   const { data: compra, error: errCompra } = await supabase
     .from('compra')
     .select('id,estudiante_id,monto_total,mp_raw')
@@ -318,7 +313,6 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
     );
   }
 
-  // 3) Usuarios
   const { data: estudiante, error: errEst } = await supabase
     .from('usuario')
     .select('id,nombre,apellido,email,telefono,timezone')
@@ -343,7 +337,6 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
     });
   }
 
-  // 4) Metadata
   const meta = compra?.mp_raw?.metadata || {};
   const asignaturaNombre = meta?.asignatura_nombre || 'Clase personalizada';
   const duracionHoras = meta?.duracion_horas ?? null;
@@ -352,7 +345,6 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
   const profesorTZ = meta?.profesor_timezone || profesor?.timezone || DEFAULT_TZ;
   const estudianteTZ = meta?.estudiante_timezone || estudiante?.timezone || DEFAULT_TZ;
 
-  // 5) Enviar (secuencial para logs claros)
   try {
     if (!adminEmail) throw new Error('ADMIN_EMAIL/ADMINEMAIL no configurado.');
 
@@ -429,6 +421,7 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
   console.log('✅ notifyClasePersonalizadaAfterSessionCreated final', { sesionId, result });
   return result;
 };
+
 // =============================
 // COMPRA CURSO (emails + orquestador)
 // =============================
@@ -521,12 +514,6 @@ export const sendCompraCursoEstudianteEmail = async ({
   );
 };
 
-/**
- * ✅ Orquestador CURSO:
- * - Busca compra + curso + estudiante + profesor
- * - (Opcional pero recomendado) crea inscripcion_curso si no existe
- * - Envía correos a admin + profesor + estudiante
- */
 export const notifyCompraCursoAfterPaymentApproved = async ({ compraId }) => {
   const result = {
     admin: { ok: false, error: null, to: null, resendId: null },
@@ -534,7 +521,6 @@ export const notifyCompraCursoAfterPaymentApproved = async ({ compraId }) => {
     estudiante: { ok: false, error: null, to: null, resendId: null },
   };
 
-  // 1) Compra
   const { data: compra, error: errCompra } = await supabase
     .from('compra')
     .select('id,tipo_compra,estudiante_id,curso_id,monto_total,mp_raw')
@@ -548,14 +534,12 @@ export const notifyCompraCursoAfterPaymentApproved = async ({ compraId }) => {
     throw new Error(`notifyCompraCursoAfterPaymentApproved: compra no es de curso (${compraId})`);
   }
 
-  // 2) Estudiante
   const { data: estudiante } = await supabase
     .from('usuario')
     .select('id,nombre,apellido,email,telefono,timezone')
     .eq('id', compra.estudiante_id)
     .single();
 
-  // 3) Curso + profesor
   const { data: curso, error: errCurso } = await supabase
     .from('curso')
     .select('id,nombre,profesor:profesor_id(id,nombre,apellido,email)')
@@ -592,7 +576,6 @@ export const notifyCompraCursoAfterPaymentApproved = async ({ compraId }) => {
 
   const adminEmail = normalizeEmail(await getAdminEmail());
 
-  // 5) Envíos (secuencial, mismo estilo que clase personalizada)
   try {
     if (!adminEmail) throw new Error('ADMIN_EMAIL/ADMINEMAIL no configurado.');
     const sent = await sendCompraCursoAdminEmail({
@@ -706,18 +689,12 @@ export const sendCompraPaqueteHorasEstudianteEmail = async ({
   );
 };
 
-/**
- * ✅ Orquestador PAQUETE:
- * - Busca compra + estudiante + clase_personalizada(+asignatura)
- * - Envía correos a admin + estudiante
- */
 export const notifyPaqueteHorasAfterPaymentApproved = async ({ compraId }) => {
   const result = {
     admin: { ok: false, error: null, to: null, resendId: null },
     estudiante: { ok: false, error: null, to: null, resendId: null },
   };
 
-  // 1) Compra
   const { data: compra, error: errCompra } = await supabase
     .from('compra')
     .select('id,tipo_compra,estudiante_id,clase_personalizada_id,monto_total,horas_totales,mp_raw')
@@ -731,14 +708,12 @@ export const notifyPaqueteHorasAfterPaymentApproved = async ({ compraId }) => {
     throw new Error(`notifyPaqueteHorasAfterPaymentApproved: compra no es paquete_horas (${compraId})`);
   }
 
-  // 2) Estudiante
   const { data: estudiante } = await supabase
     .from('usuario')
     .select('id,nombre,apellido,email,telefono,timezone')
     .eq('id', compra.estudiante_id)
     .single();
 
-  // 3) Clase personalizada + asignatura (solo para mostrar nombre)
   let asignaturaNombre = 'Clase personalizada';
   try {
     if (compra.clase_personalizada_id) {
@@ -758,7 +733,6 @@ export const notifyPaqueteHorasAfterPaymentApproved = async ({ compraId }) => {
 
   const adminEmail = normalizeEmail(await getAdminEmail());
 
-  // 4) Envíos
   try {
     if (!adminEmail) throw new Error('ADMIN_EMAIL/ADMINEMAIL no configurado.');
     const sent = await sendCompraPaqueteHorasAdminEmail({
@@ -794,6 +768,7 @@ export const notifyPaqueteHorasAfterPaymentApproved = async ({ compraId }) => {
   console.log('✅ notifyPaqueteHorasAfterPaymentApproved final', { compraId: compra.id, result });
   return result;
 };
+
 // ============================================
 // Paquete horas: notificar SOLO profesor
 // (cuando se agenda una sesión usando horas)
@@ -834,19 +809,11 @@ export const sendPaqueteHorasProfesorAsignadoEmail = async ({
   );
 };
 
-/**
- * Orquestador:
- * - Recibe sesionId
- * - Verifica que sea de compra tipo paquete_horas
- * - Busca profesor + estudiante + asignatura
- * - Envía correo SOLO al profesor
- */
 export const notifyProfesorAfterPaqueteHorasSessionCreated = async ({ sesionId }) => {
   const result = {
     profesor: { ok: false, error: null, to: null, resendId: null },
   };
 
-  // 1) Sesión
   const { data: sesion, error: errSesion } = await supabase
     .from('sesion_clase')
     .select('id,compra_id,profesor_id,fecha_hora,franja_horaria_ids,estado')
@@ -857,7 +824,6 @@ export const notifyProfesorAfterPaqueteHorasSessionCreated = async ({ sesionId }
     throw new Error(`notifyProfesorAfterPaqueteHorasSessionCreated: sesion_clase no encontrada (${sesionId})`);
   }
 
-  // 2) Compra (validar que sea paquete_horas)
   const { data: compra, error: errCompra } = await supabase
     .from('compra')
     .select('id,tipo_compra,estudiante_id,clase_personalizada_id')
@@ -869,25 +835,21 @@ export const notifyProfesorAfterPaqueteHorasSessionCreated = async ({ sesionId }
   }
 
   if (compra.tipo_compra !== 'paquete_horas') {
-    // No aplica (evita correos en otros flujos)
     return result;
   }
 
-  // 3) Profesor
   const { data: profesor } = await supabase
     .from('usuario')
     .select('id,nombre,apellido,email,timezone')
     .eq('id', sesion.profesor_id)
     .single();
 
-  // 4) Estudiante
   const { data: estudiante } = await supabase
     .from('usuario')
     .select('id,nombre,apellido,email,telefono,timezone')
     .eq('id', compra.estudiante_id)
     .single();
 
-  // 5) Asignatura (desde clase_personalizada)
   let asignaturaNombre = 'Clase personalizada';
   try {
     if (compra.clase_personalizada_id) {
@@ -933,4 +895,81 @@ export const notifyProfesorAfterPaqueteHorasSessionCreated = async ({ sesionId }
   }
 
   return result;
+};
+
+// =======================================================
+// NUEVO: Curso grupal => notificar a inscritos cuando hay Meet
+// =======================================================
+
+/**
+ * Envía correo a TODOS los estudiantes inscritos de un curso
+ * cuando se asigna/actualiza el link_meet en una sesión (curso_sesion).
+ *
+ * REGLA: NO llamar esto al crear la sesión, solo al asignar link_meet.
+ */
+export const notifyCursoSesionMeetLinkAssigned = async ({ cursoSesionId }) => {
+  const { data: sesion, error: errSesion } = await supabase
+    .from('curso_sesion')
+    .select('id, curso_id, fecha_hora, link_meet')
+    .eq('id', cursoSesionId)
+    .single();
+
+  if (errSesion || !sesion?.id) {
+    throw new Error(`notifyCursoSesionMeetLinkAssigned: curso_sesion no encontrada (${cursoSesionId})`);
+  }
+
+  if (!sesion.link_meet) {
+    return { ok: true, sent: 0, skipped: true, reason: 'Sin link_meet' };
+  }
+
+  const { data: insc, error: errInsc } = await supabase
+    .from('inscripcion_curso')
+    .select('estudiante_id')
+    .eq('curso_id', sesion.curso_id);
+
+  if (errInsc) throw errInsc;
+
+  const estudianteIds = (insc || []).map((x) => x.estudiante_id).filter(Boolean);
+
+  if (estudianteIds.length === 0) {
+    return { ok: true, sent: 0, skipped: true, reason: 'Sin inscritos' };
+  }
+
+  const { data: estudiantes, error: errEst } = await supabase
+    .from('usuario')
+    .select('id,email,timezone,nombre,apellido')
+    .in('id', estudianteIds);
+
+  if (errEst) throw errEst;
+
+  const link = sesion.link_meet;
+  let sentCount = 0;
+  const errors = [];
+
+  for (const est of (estudiantes || [])) {
+    const email = normalizeEmail(est?.email);
+    if (!email) continue;
+
+    const when = formatDateTimeInTZ(sesion.fecha_hora, est?.timezone || DEFAULT_TZ);
+
+    try {
+      await sendEmailStrict(
+        {
+          to: email,
+          subject: 'Tu sesión ya tiene link de Meet',
+          html: wrapHtml(`
+            <h2>Link de Meet disponible ✅</h2>
+            <p><strong>Fecha y hora:</strong> ${safe(when)}</p>
+            <p><strong>Link Meet:</strong> <a href="${safe(link)}">${safe(link)}</a></p>
+          `),
+        },
+        2
+      );
+      sentCount += 1;
+    } catch (e) {
+      errors.push({ email, error: e?.message || String(e) });
+    }
+  }
+
+  return { ok: errors.length === 0, sent: sentCount, errors };
 };

@@ -16,9 +16,9 @@ import {
 dotenv.config();
 
 const BUCKET_DOCUMENTOS = process.env.SUPABASE_BUCKET_DOCUMENTOS || 'pdfs';
-const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25MB (coincide con uploadMemory.js) [file:444]
+const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25MB (coincide con uploadMemory.js)
 
-// Tipos permitidos: amplio a “lo que necesite subir” (pdf, docx, rar, zip, imágenes, etc.)
+// Tipos permitidos
 const ALLOWED_MIME = new Set([
   'application/pdf',
   'application/msword',
@@ -29,7 +29,7 @@ const ALLOWED_MIME = new Set([
   'application/x-zip-compressed',
   'application/x-rar-compressed',
   'application/vnd.rar',
-  'application/octet-stream', // algunos clientes mandan rar/zip así
+  'application/octet-stream',
   'image/png',
   'image/jpeg',
   'image/webp',
@@ -59,9 +59,6 @@ const uploadToSupabase = async ({ bucket, path, buffer, contentType }) => {
   return { publicUrl: pub?.publicUrl || null, path };
 };
 
-/**
- * Extrae el id del webhook de MercadoPago de forma segura.
- */
 const extractMercadoPagoId = (req) => {
   const raw =
     req.query?.id ||
@@ -110,7 +107,6 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       fecha_hora,
       estudiante_timezone,
       descripcion_estudiante
-      // documento_url ya no es necesario desde frontend; lo seteamos si viene req.file
     } = req.body;
 
     if (!tipo_compra) {
@@ -221,7 +217,6 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         return res.status(404).json({ success: false, message: 'Clase personalizada no encontrada' });
       }
 
-      // ✅ No tocar franjas/validación
       const asignacion = await asignarProfesorOptimo(
         clase.asignatura_id,
         String(fecha_hora),
@@ -245,14 +240,10 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         fecha_hora: String(fecha_hora),
         estudiante_timezone: estudianteTimeZone,
         descripcion_estudiante: descripcion_estudiante || null,
-
-        // documento_url se setea abajo si viene req.file
         documento_url: null,
-
         profesor_id: asignacion.profesor?.id || null,
         franja_horaria_ids: asignacion.franjasUtilizadas || [],
         profesor_timezone: asignacion.profesorTimeZone || null,
-
         duracion_horas: clase.duracion_horas,
         asignatura_id: clase.asignatura_id,
         asignatura_nombre: clase?.asignatura?.nombre || null
@@ -312,7 +303,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
     if (errCompra) throw errCompra;
 
-    // 3.1) Si viene archivo y es clase_personalizada, subirlo y guardarlo en metadata
+    // 3.1) Subir documento si viene (clase_personalizada)
     if (tipo_compra === 'clase_personalizada' && req.file) {
       if (req.file.size > MAX_FILE_BYTES) {
         return res.status(400).json({ success: false, message: 'Archivo demasiado grande (máx 25MB).' });
@@ -336,7 +327,6 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         contentType: mimetype
       });
 
-      // guardar url en metadata para que el webhook la use
       metadata = { ...metadata, documento_url: up.publicUrl };
     }
 
@@ -414,7 +404,6 @@ export const webhookMercadoPago = async (req, res) => {
       payload: { query: req.query, body: req.body, headers: req.headers }
     }]);
 
-    // merchant_order lo ignoras (como ya haces)
     if (topic === 'merchant_order') return res.status(200).send('OK');
 
     if (topic === 'payment' || topic === 'payment.updated') {
@@ -457,7 +446,6 @@ export const webhookMercadoPago = async (req, res) => {
         .eq('id', external_reference)
         .single();
 
-
       if (errCompra || !compra?.id) return res.status(200).send('OK');
 
       // CURSO
@@ -485,7 +473,33 @@ export const webhookMercadoPago = async (req, res) => {
             if (errIns) throw errIns;
           }
 
-          // 2) notificación (ya la tenías)
+          // ✅ 2) Vincular sesiones existentes del curso al estudiante (curso_sesion_estudiante)
+          //     (esto hace que “le aparezca cada sesión”)
+          try {
+            const { data: sesiones, error: errSes } = await supabase
+              .from('curso_sesion')
+              .select('id')
+              .eq('curso_id', compra.curso_id);
+
+            if (errSes) throw errSes;
+
+            if (Array.isArray(sesiones) && sesiones.length > 0) {
+              const links = sesiones.map((s) => ({
+                curso_sesion_id: s.id,
+                estudiante_id: compra.estudiante_id
+              }));
+
+              const { error: errLink } = await supabase
+                .from('curso_sesion_estudiante')
+                .upsert(links, { onConflict: 'curso_sesion_id,estudiante_id' });
+
+              if (errLink) throw errLink;
+            }
+          } catch (e) {
+            console.error('⚠️ No se pudo vincular curso_sesion_estudiante post-pago:', e?.message || e);
+          }
+
+          // 3) notificación de compra (la que ya tenías)
           await notifyCompraCursoAfterPaymentApproved({ compraId: compra.id });
 
           return res.status(200).send('OK');
@@ -494,7 +508,6 @@ export const webhookMercadoPago = async (req, res) => {
           return res.status(200).send('OK');
         }
       }
-
 
       // PAQUETE HORAS
       if (compra.tipo_compra === 'paquete_horas') {
