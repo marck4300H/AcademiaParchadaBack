@@ -19,6 +19,8 @@ import sesionesRoutes from './routes/sesiones.routes.js';
 import imagenesRoutes from './routes/imagenes.routes.js';
 import materialEstudioRoutes from './routes/materialEstudio.routes.js';
 import seccionCursoRoutes from './routes/seccionCurso.routes.js';
+import cursoSesionesRoutes from './routes/cursoSesiones.routes.js';
+
 
 
 // Cargar variables de entorno
@@ -124,6 +126,7 @@ app.use('/api/sesiones', sesionesRoutes);
 app.use('/api/imagenes', imagenesRoutes);
 app.use('/api/material-estudio', materialEstudioRoutes);
 app.use('/api/cursos', seccionCursoRoutes);
+app.use('/api/cursos', cursoSesionesRoutes);
 
 
 // ============================================
