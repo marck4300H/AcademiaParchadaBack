@@ -289,10 +289,10 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       moneda: 'COP'
     };
 
+    // ✅ CORRECCIÓN: no asignar horas en checkout si está pendiente
+    // (las horas se asignan en webhook cuando estado_pago pase a 'completado')
     if (tipo_compra === 'paquete_horas') {
-      compraInsert.horas_totales = Number(cantidad_horas);
-      compraInsert.horas_usadas = 0;
-      compraInsert.horas_disponibles = Number(cantidad_horas);
+      // no-op
     }
 
     const { data: compra, error: errCompra } = await supabase
@@ -442,7 +442,7 @@ export const webhookMercadoPago = async (req, res) => {
 
       const { data: compra, error: errCompra } = await supabase
         .from('compra')
-        .select('id, estudiante_id, tipo_compra, curso_id, clase_personalizada_id, mp_raw')
+        .select('id, estudiante_id, tipo_compra, curso_id, clase_personalizada_id, mp_raw, horas_totales, horas_usadas, horas_disponibles')
         .eq('id', external_reference)
         .single();
 
@@ -512,9 +512,36 @@ export const webhookMercadoPago = async (req, res) => {
       // PAQUETE HORAS
       if (compra.tipo_compra === 'paquete_horas') {
         try {
+          const meta = compra?.mp_raw?.metadata || {};
+          const horas = Number(meta?.cantidad_horas);
+
+          if (!horas || horas <= 0) {
+            console.error('❌ compra paquete_horas sin metadata.cantidad_horas válida', {
+              compraId: compra.id,
+              meta
+            });
+            return res.status(200).send('OK');
+          }
+
+          const yaAsignado =
+            compra.horas_totales !== null &&
+            compra.horas_totales !== undefined &&
+            Number(compra.horas_totales) > 0;
+
+          if (!yaAsignado) {
+            await supabase
+              .from('compra')
+              .update({
+                horas_totales: horas,
+                horas_usadas: 0,
+                horas_disponibles: horas
+              })
+              .eq('id', compra.id);
+          }
+
           await notifyPaqueteHorasAfterPaymentApproved({ compraId: compra.id });
         } catch (e) {
-          console.error('❌ Error notificando paquete_horas (emailService):', e?.message || e);
+          console.error('❌ Error post-pago paquete_horas (MP):', e?.message || e);
         }
         return res.status(200).send('OK');
       }
