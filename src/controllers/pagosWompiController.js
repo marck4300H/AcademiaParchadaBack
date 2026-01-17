@@ -219,11 +219,45 @@ export const crearCheckoutWompi = async (req, res) => {
 
       const { data: curso, error } = await supabase
         .from("curso")
-        .select("id,nombre,precio,profesor_id")
+        .select("id,nombre,precio,profesor_id,capacidad_maxima")
         .eq("id", curso_id)
         .single();
 
       if (error || !curso) return res.status(404).json({ success: false, message: "Curso no encontrado" });
+
+      // ✅ NUEVO: bloquear si ya está inscrito
+      const { data: inscExist, error: inscErr } = await supabase
+        .from("inscripcion_curso")
+        .select("id")
+        .eq("estudiante_id", estudiante_id)
+        .eq("curso_id", curso.id)
+        .maybeSingle();
+
+      if (inscErr) throw inscErr;
+
+      if (inscExist?.id) {
+        return res.status(400).json({
+          success: false,
+          message: "Ya estás inscrito en este curso. No puedes comprarlo nuevamente.",
+        });
+      }
+
+      // ✅ NUEVO: validar cupo
+      const capMax = Number(curso.capacidad_maxima ?? 25);
+
+      const { count: inscritosCount, error: countErr } = await supabase
+        .from("inscripcion_curso")
+        .select("id", { count: "exact", head: true })
+        .eq("curso_id", curso.id);
+
+      if (countErr) throw countErr;
+
+      if (Number.isFinite(capMax) && capMax > 0 && (inscritosCount || 0) >= capMax) {
+        return res.status(400).json({
+          success: false,
+          message: "Este curso ya alcanzó su capacidad máxima. No hay cupos disponibles.",
+        });
+      }
 
       titulo = `Curso: ${curso.nombre}`;
       monto_total = Number(curso.precio);
@@ -313,8 +347,7 @@ export const crearCheckoutWompi = async (req, res) => {
       wompi_reference: null,
     };
 
-    // ✅ CORRECCIÓN: no asignar horas en checkout si está pendiente
-    // (las horas se asignan en webhook cuando estado_pago pase a 'completado')
+    // no asignar horas aquí (se asignan en webhook)
     if (tipo_compra === "paquete_horas") {
       // no-op
     }
@@ -490,9 +523,9 @@ export const webhookWompi = async (req, res) => {
 
     const meta = compra?.wompi_raw?.metadata || {};
 
-    // ===== POST-PAGO SEGÚN tipo_compra (CORREGIDO flujo/llaves) =====
+    // ===== POST-PAGO SEGÚN tipo_compra =====
 
-    // 1) CURSO => inscripcion_curso + link a sesiones + email
+    // CURSO => inscripcion_curso + link a sesiones + email
     if (compra.tipo_compra === "curso" && compra.curso_id) {
       try {
         log("Post-pago curso init", { requestId, compraId: compra.id });
@@ -515,7 +548,7 @@ export const webhookWompi = async (req, res) => {
           if (errIns) throw errIns;
         }
 
-        // Vincular sesiones existentes del curso al estudiante (como en MercadoPago)
+        // Vincular sesiones existentes del curso al estudiante
         const { data: sesiones, error: errSes } = await supabase
           .from("curso_sesion")
           .select("id")
@@ -546,7 +579,7 @@ export const webhookWompi = async (req, res) => {
       return res.status(200).send("OK");
     }
 
-    // 2) PAQUETE HORAS => asignar horas SOLO cuando esté completado + email
+    // PAQUETE HORAS => asignar horas SOLO cuando esté completado + email
     if (compra.tipo_compra === "paquete_horas") {
       try {
         log("Post-pago paquete_horas init", { requestId, compraId: compra.id });
@@ -588,7 +621,7 @@ export const webhookWompi = async (req, res) => {
       return res.status(200).send("OK");
     }
 
-    // 3) CLASE PERSONALIZADA => crear sesion_clase (idempotente) + email
+    // CLASE PERSONALIZADA => crear sesion_clase (idempotente) + email
     if (compra.tipo_compra === "clase_personalizada") {
       try {
         log("Post-pago clase_personalizada init", { requestId, compraId: compra.id });

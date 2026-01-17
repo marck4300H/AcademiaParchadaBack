@@ -67,7 +67,8 @@ export const createCurso = async (req, res) => {
       fecha_fin,
       asignatura_id,
       profesor_id,
-      franja_horaria_ids
+      franja_horaria_ids,
+      capacidad_maxima
     } = req.body;
 
     // helper: parse franja_horaria_ids cuando viene como string en form-data
@@ -99,6 +100,19 @@ export const createCurso = async (req, res) => {
         success: false,
         message: 'El tipo debe ser "grupal" o "pregrabado"'
       });
+    }
+
+    // NUEVO: capacidad_maxima (default 25 si no se especifica)
+    let capacidadMax = 25;
+    if (capacidad_maxima !== undefined && capacidad_maxima !== null && String(capacidad_maxima).trim() !== '') {
+      capacidadMax = Number(capacidad_maxima);
+      if (!Number.isFinite(capacidadMax) || capacidadMax <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'capacidad_maxima debe ser un número entero mayor a 0'
+        });
+      }
+      capacidadMax = Math.trunc(capacidadMax);
     }
 
     if (tipo_pago_profesor && !['porcentaje', 'monto_fijo'].includes(tipo_pago_profesor)) {
@@ -184,7 +198,8 @@ export const createCurso = async (req, res) => {
       duracion_horas: Number(duracion_horas),
       tipo,
       asignatura_id,
-      estado: 'activo'
+      estado: 'activo',
+      capacidad_maxima: capacidadMax
     };
 
     if (profesor_id) cursoData.profesor_id = profesor_id;
@@ -475,7 +490,8 @@ export const updateCurso = async (req, res) => {
       fecha_fin,
       asignatura_id,
       profesor_id,
-      franja_horaria_ids
+      franja_horaria_ids,
+      capacidad_maxima
     } = req.body;
 
     const { data: cursoExistente, error: cursoError } = await supabase
@@ -559,6 +575,15 @@ export const updateCurso = async (req, res) => {
         });
       }
       updateData.estado = estado;
+    }
+
+    // NUEVO: capacidad_maxima editable
+    if (capacidad_maxima !== undefined) {
+      const cap = Number(capacidad_maxima);
+      if (!Number.isFinite(cap) || cap <= 0) {
+        return res.status(400).json({ success: false, message: 'capacidad_maxima debe ser > 0' });
+      }
+      updateData.capacidad_maxima = Math.trunc(cap);
     }
 
     if (fecha_inicio !== undefined) updateData.fecha_inicio = fecha_inicio;
@@ -802,7 +827,8 @@ export const buscarCursos = async (req, res) => {
         fecha_inicio,
         fecha_fin,
         created_at,
-        updated_at
+        updated_at,
+        capacidad_maxima
       `)
       .or(`nombre.ilike.%${q}%,descripcion.ilike.%${q}%`)
       .order('created_at', { ascending: false });
