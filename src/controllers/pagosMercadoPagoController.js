@@ -187,12 +187,45 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
       const { data: curso, error } = await supabase
         .from('curso')
-        .select('id,nombre,precio,profesor_id')
+        .select('id,nombre,precio,profesor_id,capacidad_maxima')
         .eq('id', curso_id)
         .single();
 
       if (error || !curso) {
         return res.status(404).json({ success: false, message: 'Curso no encontrado' });
+      }
+
+      // ✅ NUEVO: bloquear si ya está inscrito
+      const { data: inscExist, error: inscErr } = await supabase
+        .from('inscripcion_curso')
+        .select('id')
+        .eq('estudiante_id', estudiante_id)
+        .eq('curso_id', curso.id)
+        .maybeSingle();
+
+      if (inscErr) throw inscErr;
+
+      if (inscExist?.id) {
+        return res.status(400).json({
+          success: false,
+          message: 'Ya estás inscrito en este curso. No puedes comprarlo nuevamente.'
+        });
+      }
+
+      // ✅ NUEVO: validar cupo
+      const capMax = Number(curso.capacidad_maxima ?? 25);
+      const { count: inscritosCount, error: countErr } = await supabase
+        .from('inscripcion_curso')
+        .select('id', { count: 'exact', head: true })
+        .eq('curso_id', curso.id);
+
+      if (countErr) throw countErr;
+
+      if (Number.isFinite(capMax) && capMax > 0 && (inscritosCount || 0) >= capMax) {
+        return res.status(400).json({
+          success: false,
+          message: 'Este curso ya alcanzó su capacidad máxima. No hay cupos disponibles.'
+        });
       }
 
       titulo = `Curso: ${curso.nombre}`;
@@ -289,8 +322,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       moneda: 'COP'
     };
 
-    // ✅ CORRECCIÓN: no asignar horas en checkout si está pendiente
-    // (las horas se asignan en webhook cuando estado_pago pase a 'completado')
+    // no asignar horas aquí (se asignan en webhook)
     if (tipo_compra === 'paquete_horas') {
       // no-op
     }
@@ -451,7 +483,7 @@ export const webhookMercadoPago = async (req, res) => {
       // CURSO
       if (compra.tipo_compra === 'curso' && compra.curso_id) {
         try {
-          // 1) idempotencia de inscripción: si ya existe, no duplicar
+          // idempotencia de inscripción: si ya existe, no duplicar
           const { data: existente, error: errExist } = await supabase
             .from('inscripcion_curso')
             .select('id')
@@ -473,8 +505,7 @@ export const webhookMercadoPago = async (req, res) => {
             if (errIns) throw errIns;
           }
 
-          // ✅ 2) Vincular sesiones existentes del curso al estudiante (curso_sesion_estudiante)
-          //     (esto hace que “le aparezca cada sesión”)
+          // Vincular sesiones existentes del curso al estudiante (curso_sesion_estudiante)
           try {
             const { data: sesiones, error: errSes } = await supabase
               .from('curso_sesion')
@@ -499,7 +530,6 @@ export const webhookMercadoPago = async (req, res) => {
             console.error('⚠️ No se pudo vincular curso_sesion_estudiante post-pago:', e?.message || e);
           }
 
-          // 3) notificación de compra (la que ya tenías)
           await notifyCompraCursoAfterPaymentApproved({ compraId: compra.id });
 
           return res.status(200).send('OK');
