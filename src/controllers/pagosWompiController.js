@@ -313,10 +313,10 @@ export const crearCheckoutWompi = async (req, res) => {
       wompi_reference: null,
     };
 
+    // ✅ CORRECCIÓN: no asignar horas en checkout si está pendiente
+    // (las horas se asignan en webhook cuando estado_pago pase a 'completado')
     if (tipo_compra === "paquete_horas") {
-      compraInsert.horas_totales = Number(cantidad_horas);
-      compraInsert.horas_usadas = 0;
-      compraInsert.horas_disponibles = Number(cantidad_horas);
+      // no-op
     }
 
     log("Insertando compra pendiente", { requestId, compraInsert });
@@ -454,7 +454,7 @@ export const webhookWompi = async (req, res) => {
 
     const { data: compra, error: errCompra } = await supabase
       .from("compra")
-      .select("id, estudiante_id, tipo_compra, curso_id, clase_personalizada_id, wompi_raw")
+      .select("id, estudiante_id, tipo_compra, curso_id, clase_personalizada_id, wompi_raw, horas_totales, horas_usadas, horas_disponibles")
       .eq("wompi_reference", finalReference)
       .maybeSingle();
 
@@ -546,11 +546,40 @@ export const webhookWompi = async (req, res) => {
       return res.status(200).send("OK");
     }
 
-    // 2) PAQUETE HORAS => email (y demás lógica interna del servicio si existe)
+    // 2) PAQUETE HORAS => asignar horas SOLO cuando esté completado + email
     if (compra.tipo_compra === "paquete_horas") {
       try {
         log("Post-pago paquete_horas init", { requestId, compraId: compra.id });
+
+        const horas = Number(meta?.cantidad_horas);
+
+        if (!horas || horas <= 0) {
+          warn("compra paquete_horas sin metadata.cantidad_horas válida", {
+            requestId,
+            compraId: compra.id,
+            meta,
+          });
+          return res.status(200).send("OK");
+        }
+
+        const yaAsignado =
+          compra.horas_totales !== null &&
+          compra.horas_totales !== undefined &&
+          Number(compra.horas_totales) > 0;
+
+        if (!yaAsignado) {
+          await supabase
+            .from("compra")
+            .update({
+              horas_totales: horas,
+              horas_usadas: 0,
+              horas_disponibles: horas,
+            })
+            .eq("id", compra.id);
+        }
+
         await notifyPaqueteHorasAfterPaymentApproved({ compraId: compra.id });
+
         log("Post-pago paquete_horas OK", { requestId, compraId: compra.id });
       } catch (e) {
         errLog("Error post-pago paquete_horas", e?.message || e, e);
