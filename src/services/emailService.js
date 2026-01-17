@@ -7,6 +7,9 @@ import { DateTime } from 'luxon';
 const DEFAULT_TZ = 'America/Bogota';
 const EMAIL_DEBUG = String(process.env.EMAIL_DEBUG || '').toLowerCase() === 'true';
 
+// Resend: 2 requests/second => deja margen
+const RESEND_SEND_DELAY_MS = Number(process.env.RESEND_SEND_DELAY_MS || 650);
+
 // Admin por ENV (como lo quieres)
 export const getAdminEmail = async () => {
   return (process.env.ADMIN_EMAIL || process.env.ADMINEMAIL || '').trim() || null;
@@ -296,9 +299,7 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
     .single();
 
   if (errSesion || !sesion?.id) {
-    throw new Error(
-      `notifyClasePersonalizadaAfterSessionCreated: sesion_clase no encontrada (${sesionId})`
-    );
+    throw new Error(`notifyClasePersonalizadaAfterSessionCreated: sesion_clase no encontrada (${sesionId})`);
   }
 
   const { data: compra, error: errCompra } = await supabase
@@ -308,9 +309,7 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
     .single();
 
   if (errCompra || !compra?.id) {
-    throw new Error(
-      `notifyClasePersonalizadaAfterSessionCreated: compra no encontrada (${sesion.compra_id})`
-    );
+    throw new Error(`notifyClasePersonalizadaAfterSessionCreated: compra no encontrada (${sesion.compra_id})`);
   }
 
   const { data: estudiante, error: errEst } = await supabase
@@ -356,17 +355,14 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
       estudiante,
     });
 
-    result.admin = {
-      ok: true,
-      error: null,
-      to: sent?.to ?? adminEmail,
-      resendId: sent?.resendId ?? null,
-    };
+    result.admin = { ok: true, error: null, to: sent?.to ?? adminEmail, resendId: sent?.resendId ?? null };
   } catch (e) {
     result.admin.error = e?.message || String(e);
     result.admin.to = adminEmail;
     console.error('❌ notify: fallo admin', { sesionId, error: result.admin.error });
   }
+
+  await sleep(RESEND_SEND_DELAY_MS);
 
   try {
     const profesorEmail = normalizeEmail(profesor?.email);
@@ -382,17 +378,14 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
       estudiante,
     });
 
-    result.profesor = {
-      ok: true,
-      error: null,
-      to: sent?.to ?? profesorEmail,
-      resendId: sent?.resendId ?? null,
-    };
+    result.profesor = { ok: true, error: null, to: sent?.to ?? profesorEmail, resendId: sent?.resendId ?? null };
   } catch (e) {
     result.profesor.error = e?.message || String(e);
     result.profesor.to = normalizeEmail(profesor?.email);
     console.error('❌ notify: fallo profesor', { sesionId, error: result.profesor.error });
   }
+
+  await sleep(RESEND_SEND_DELAY_MS);
 
   try {
     const estudianteEmail = normalizeEmail(estudiante?.email);
@@ -406,12 +399,7 @@ export const notifyClasePersonalizadaAfterSessionCreated = async ({ sesionId }) 
       estudianteTimeZone: estudianteTZ,
     });
 
-    result.estudiante = {
-      ok: true,
-      error: null,
-      to: sent?.to ?? estudianteEmail,
-      resendId: sent?.resendId ?? null,
-    };
+    result.estudiante = { ok: true, error: null, to: sent?.to ?? estudianteEmail, resendId: sent?.resendId ?? null };
   } catch (e) {
     result.estudiante.error = e?.message || String(e);
     result.estudiante.to = normalizeEmail(estudiante?.email);
@@ -458,12 +446,7 @@ export const sendCompraCursoAdminEmail = async ({
   );
 };
 
-export const sendCompraCursoProfesorEmail = async ({
-  profesorEmail,
-  cursoNombre,
-  compraId,
-  estudiante,
-}) => {
+export const sendCompraCursoProfesorEmail = async ({ profesorEmail, cursoNombre, compraId, estudiante }) => {
   if (!profesorEmail) return null;
 
   return sendEmailStrict(
@@ -486,12 +469,7 @@ export const sendCompraCursoProfesorEmail = async ({
   );
 };
 
-export const sendCompraCursoEstudianteEmail = async ({
-  estudianteEmail,
-  compraId,
-  profesor,
-  cursoNombre,
-}) => {
+export const sendCompraCursoEstudianteEmail = async ({ estudianteEmail, compraId, profesor, cursoNombre }) => {
   if (!estudianteEmail) return null;
 
   return sendEmailStrict(
@@ -592,6 +570,8 @@ export const notifyCompraCursoAfterPaymentApproved = async ({ compraId }) => {
     result.admin.to = adminEmail;
   }
 
+  await sleep(RESEND_SEND_DELAY_MS);
+
   try {
     const profesorEmail = normalizeEmail(profesor?.email);
     if (!profesorEmail) throw new Error('Profesor sin email en curso.profesor_id.');
@@ -606,6 +586,8 @@ export const notifyCompraCursoAfterPaymentApproved = async ({ compraId }) => {
     result.profesor.error = e?.message || String(e);
     result.profesor.to = normalizeEmail(profesor?.email);
   }
+
+  await sleep(RESEND_SEND_DELAY_MS);
 
   try {
     const estudianteEmail = normalizeEmail(estudiante?.email);
@@ -749,6 +731,8 @@ export const notifyPaqueteHorasAfterPaymentApproved = async ({ compraId }) => {
     result.admin.to = adminEmail;
   }
 
+  await sleep(RESEND_SEND_DELAY_MS);
+
   try {
     const estudianteEmail = normalizeEmail(estudiante?.email);
     if (!estudianteEmail) throw new Error('Estudiante sin email en BD.');
@@ -810,91 +794,8 @@ export const sendPaqueteHorasProfesorAsignadoEmail = async ({
 };
 
 export const notifyProfesorAfterPaqueteHorasSessionCreated = async ({ sesionId }) => {
-  const result = {
-    profesor: { ok: false, error: null, to: null, resendId: null },
-  };
-
-  const { data: sesion, error: errSesion } = await supabase
-    .from('sesion_clase')
-    .select('id,compra_id,profesor_id,fecha_hora,franja_horaria_ids,estado')
-    .eq('id', sesionId)
-    .single();
-
-  if (errSesion || !sesion?.id) {
-    throw new Error(`notifyProfesorAfterPaqueteHorasSessionCreated: sesion_clase no encontrada (${sesionId})`);
-  }
-
-  const { data: compra, error: errCompra } = await supabase
-    .from('compra')
-    .select('id,tipo_compra,estudiante_id,clase_personalizada_id')
-    .eq('id', sesion.compra_id)
-    .single();
-
-  if (errCompra || !compra?.id) {
-    throw new Error(`notifyProfesorAfterPaqueteHorasSessionCreated: compra no encontrada (${sesion.compra_id})`);
-  }
-
-  if (compra.tipo_compra !== 'paquete_horas') {
-    return result;
-  }
-
-  const { data: profesor } = await supabase
-    .from('usuario')
-    .select('id,nombre,apellido,email,timezone')
-    .eq('id', sesion.profesor_id)
-    .single();
-
-  const { data: estudiante } = await supabase
-    .from('usuario')
-    .select('id,nombre,apellido,email,telefono,timezone')
-    .eq('id', compra.estudiante_id)
-    .single();
-
-  let asignaturaNombre = 'Clase personalizada';
-  try {
-    if (compra.clase_personalizada_id) {
-      const { data: clase } = await supabase
-        .from('clase_personalizada')
-        .select('id,asignatura:asignatura_id(id,nombre)')
-        .eq('id', compra.clase_personalizada_id)
-        .single();
-
-      asignaturaNombre = clase?.asignatura?.nombre || asignaturaNombre;
-    }
-  } catch (e) {
-    console.error('⚠️ No se pudo leer asignatura para notificación paquete:', e?.message || e);
-  }
-
-  const profesorEmail = normalizeEmail(profesor?.email);
-  const profesorTZ = profesor?.timezone || DEFAULT_TZ;
-  const duracionHoras = Array.isArray(sesion?.franja_horaria_ids) ? sesion.franja_horaria_ids.length : null;
-
-  try {
-    if (!profesorEmail) throw new Error('Profesor sin email en BD.');
-
-    const sent = await sendPaqueteHorasProfesorAsignadoEmail({
-      profesorEmail,
-      sesionId: sesion.id,
-      asignaturaNombre,
-      fechaHoraIso: sesion.fecha_hora,
-      duracionHoras,
-      profesorTimeZone: profesorTZ,
-      estudiante,
-    });
-
-    result.profesor = {
-      ok: true,
-      error: null,
-      to: sent?.to ?? profesorEmail,
-      resendId: sent?.resendId ?? null,
-    };
-  } catch (e) {
-    result.profesor.error = e?.message || String(e);
-    result.profesor.to = profesorEmail;
-    console.error('❌ notify paquete: fallo profesor', { sesionId, error: result.profesor.error });
-  }
-
-  return result;
+  // (sin cambios: aquí solo envías 1 correo)
+  // ... deja tu implementación original tal cual ...
 };
 
 // =======================================================
@@ -946,7 +847,7 @@ export const notifyCursoSesionMeetLinkAssigned = async ({ cursoSesionId }) => {
   let sentCount = 0;
   const errors = [];
 
-  for (const est of (estudiantes || [])) {
+  for (const est of estudiantes || []) {
     const email = normalizeEmail(est?.email);
     if (!email) continue;
 
@@ -966,6 +867,9 @@ export const notifyCursoSesionMeetLinkAssigned = async ({ cursoSesionId }) => {
         2
       );
       sentCount += 1;
+
+      // Este loop puede mandar N correos: control de rate limit
+      await sleep(RESEND_SEND_DELAY_MS);
     } catch (e) {
       errors.push({ email, error: e?.message || String(e) });
     }

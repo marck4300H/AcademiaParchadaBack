@@ -9,6 +9,7 @@ import {
 
 import { verifyToken } from '../utils/jwt.js';
 import { uploadSingle } from '../middlewares/uploadMemory.js';
+import { crearCheckoutWompi, webhookWompi } from "../controllers/pagosWompiController.js";
 
 const router = express.Router();
 
@@ -80,5 +81,13 @@ router.post('/mercadopago/webhook', webhookMercadoPago);
  * GET /api/pagos/mercadopago/estado/:compra_id
  */
 router.get('/mercadopago/estado/:compra_id', obtenerEstadoCompra);
+
+/**
+ * Rutas de Wompi
+ */
+router.post("/wompi/checkout", optionalAuth, crearCheckoutWompi);
+
+
+router.post("/wompi/eventos", webhookWompi);
 
 export default router;

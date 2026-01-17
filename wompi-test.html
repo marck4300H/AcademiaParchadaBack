@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Wompi - Paquete de horas</title>
+  </head>
+  <body style="font-family: Arial, sans-serif; padding: 24px;">
+    <h2>Checkout Wompi (paquete de horas)</h2>
+
+    <p><strong>compraId:</strong> bac359c6-c27b-41fb-bb13-ef73c35c0f1d</p>
+    <p><strong>reference:</strong> compra_bac359c6-c27b-41fb-bb13-ef73c35c0f1d</p>
+    <p><strong>amount_in_cents:</strong> 30000000</p>
+
+    <form>
+      <script
+        src="https://checkout.wompi.co/widget.js"
+        data-render="button"
+        data-public-key="pub_test_hcGzEL0EOkNcmKRToE7QxWG4uwPiL00t"
+        data-currency="COP"
+        data-amount-in-cents="30000000"
+        data-reference="compra_bac359c6-c27b-41fb-bb13-ef73c35c0f1d"
+        data-signature:integrity="6b13ed64c2dea7703bacf9384dd6e6f65bcca09d41667a924869bfc8c773c6fb"
+      ></script>
+    </form>
+
+    <hr />
+    <p>
+      Webhook (backend):
+      <code>https://madonna-appointed-teaching-beijing.trycloudflare.com/api/pagos/wompi/eventos</code>
+    </p>
+
+    <p>
+      Redirects (frontend):
+      <br />success:
+      <a href="http://localhost:5173/pago-exitoso?compraId=bac359c6-c27b-41fb-bb13-ef73c35c0f1d">
+        http://localhost:5173/pago-exitoso?compraId=bac359c6-c27b-41fb-bb13-ef73c35c0f1d
+      </a>
+      <br />pending:
+      <a href="http://localhost:5173/pago-pendiente?compraId=bac359c6-c27b-41fb-bb13-ef73c35c0f1d">
+        http://localhost:5173/pago-pendiente?compraId=bac359c6-c27b-41fb-bb13-ef73c35c0f1d
+      </a>
+      <br />failure:
+      <a href="http://localhost:5173/pago-fallido?compraId=bac359c6-c27b-41fb-bb13-ef73c35c0f1d">
+        http://localhost:5173/pago-fallido?compraId=bac359c6-c27b-41fb-bb13-ef73c35c0f1d
+      </a>
+    </p>
+  </body>
+</html>
