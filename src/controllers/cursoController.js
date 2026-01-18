@@ -2,6 +2,7 @@
 
 import { supabase } from '../config/supabase.js';
 import { uploadToSupabaseBucket, buildImagePath, safeName } from '../services/storageService.js';
+import { generarSesionesSemanalesPorRangoHora } from '../utils/generarSesionesCurso.js';
 
 /**
  * Helper: validar/consultar inscripción de estudiante a un curso.
@@ -52,6 +53,16 @@ async function getInscritoFlag({ cursoId, user }) {
  * CU-021: Crear Curso
  * POST /api/cursos
  * Rol: Administrador
+ *
+ * NUEVO (opcional):
+ * - sesiones_programadas: {
+ *    timezone: 'America/Bogota',
+ *    days_of_week: ['MON','THU'] o ['MON','TUE','WED','THU','FRI'],
+ *    hora_inicio: '16:00',
+ *    hora_fin: '18:00',
+ *    exclude_dates?: ['YYYY-MM-DD', ...],
+ *    estado?: 'programada'
+ * }
  */
 export const createCurso = async (req, res) => {
   try {
@@ -68,7 +79,8 @@ export const createCurso = async (req, res) => {
       asignatura_id,
       profesor_id,
       franja_horaria_ids,
-      capacidad_maxima
+      capacidad_maxima,
+      sesiones_programadas // ✅ NUEVO (opcional)
     } = req.body;
 
     // helper: parse franja_horaria_ids cuando viene como string en form-data
@@ -78,6 +90,19 @@ export const createCurso = async (req, res) => {
         franjasParsed = JSON.parse(franjasParsed);
       } catch {
         // si no es JSON válido, queda como string y fallará en la validación de array más abajo
+      }
+    }
+
+    // ✅ parse sesiones_programadas si viene en form-data como string
+    let sesionesProgramadasParsed = sesiones_programadas;
+    if (typeof sesionesProgramadasParsed === 'string') {
+      try {
+        sesionesProgramadasParsed = JSON.parse(sesionesProgramadasParsed);
+      } catch {
+        return res.status(400).json({
+          success: false,
+          message: 'sesiones_programadas debe ser un JSON válido si se envía como string.'
+        });
       }
     }
 
@@ -151,6 +176,36 @@ export const createCurso = async (req, res) => {
       }
     }
 
+    // ✅ Validación adicional: si viene sesiones_programadas, debe ser curso grupal + fechas obligatorias
+    if (sesionesProgramadasParsed) {
+      if (tipo !== 'grupal') {
+        return res.status(400).json({
+          success: false,
+          message: 'sesiones_programadas solo aplica para cursos tipo "grupal".'
+        });
+      }
+      if (!fecha_inicio || !fecha_fin) {
+        return res.status(400).json({
+          success: false,
+          message: 'Para generar sesiones, debes enviar fecha_inicio y fecha_fin en el curso.'
+        });
+      }
+
+      // Validar presencia de hora_inicio/hora_fin/days_of_week (lo demás lo valida el util)
+      if (!sesionesProgramadasParsed.hora_inicio || !sesionesProgramadasParsed.hora_fin) {
+        return res.status(400).json({
+          success: false,
+          message: 'sesiones_programadas.hora_inicio y sesiones_programadas.hora_fin son obligatorias.'
+        });
+      }
+      if (!Array.isArray(sesionesProgramadasParsed.days_of_week) || sesionesProgramadasParsed.days_of_week.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'sesiones_programadas.days_of_week debe ser un array con al menos un día (MON..SUN).'
+        });
+      }
+    }
+
     // Validar asignatura
     const { data: asignatura, error: asignaturaError } = await supabase
       .from('asignatura')
@@ -217,6 +272,46 @@ export const createCurso = async (req, res) => {
       .single();
 
     if (cursoError) throw cursoError;
+
+    // ✅ 1.1) Generar sesiones si aplica (opcional)
+    if (sesionesProgramadasParsed) {
+      const timezone = sesionesProgramadasParsed.timezone || 'America/Bogota';
+
+      const days_of_week = sesionesProgramadasParsed.days_of_week;
+      const hora_inicio = sesionesProgramadasParsed.hora_inicio;
+      const hora_fin = sesionesProgramadasParsed.hora_fin;
+      const exclude_dates = sesionesProgramadasParsed.exclude_dates || [];
+      const estado = sesionesProgramadasParsed.estado || 'programada';
+
+      const sesiones = generarSesionesSemanalesPorRangoHora({
+        fecha_inicio,
+        fecha_fin,
+        timezone,
+        days_of_week,
+        hora_inicio,
+        hora_fin,
+        exclude_dates,
+        estado
+      });
+
+      if (sesiones.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'La regla de sesiones no generó ninguna sesión dentro del rango fecha_inicio/fecha_fin.'
+        });
+      }
+
+      const rows = sesiones.map((s) => ({
+        curso_id: curso.id,
+        fecha_hora: s.fecha_hora,
+        duracion_min: s.duracion_min,
+        link_meet: null,
+        estado: s.estado
+      }));
+
+      const { error: sesErr } = await supabase.from('curso_sesion').insert(rows);
+      if (sesErr) throw sesErr;
+    }
 
     // 2) Si hay imagen, subirla y actualizar curso
     if (req.file) {
@@ -397,13 +492,9 @@ export const getCursoContenido = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Curso no encontrado' });
     }
 
-    // inscrito true/false (para UI)
     const inscrito = await getInscritoFlag({ cursoId, user: req.user });
-
-    // si es estudiante y no inscrito => 403
     await assertEstudianteTieneInscripcionCurso({ cursoId, user: req.user });
 
-    // Secciones (pregrabado)
     const { data: secciones, error: secErr } = await supabase
       .from('seccion_curso')
       .select('*')
@@ -412,7 +503,6 @@ export const getCursoContenido = async (req, res) => {
 
     if (secErr) throw secErr;
 
-    // Materiales
     const { data: materialesCompletos, error: matErr } = await supabase
       .from('material_estudio')
       .select('*')
@@ -430,7 +520,6 @@ export const getCursoContenido = async (req, res) => {
       created_at: m.created_at
     }));
 
-    // NUEVO: sesiones (solo para cursos grupales)
     let sesiones = [];
     if (curso.tipo === 'grupal') {
       const { data: ses, error: sesErr } = await supabase
@@ -449,9 +538,9 @@ export const getCursoContenido = async (req, res) => {
         inscrito,
         curso,
         secciones: secciones || [],
-        materiales, // limpio
-        materiales_completos: materialesCompletos || [], // completo
-        sesiones // NUEVO
+        materiales,
+        materiales_completos: materialesCompletos || [],
+        sesiones
       }
     });
   } catch (error) {
@@ -465,14 +554,10 @@ export const getCursoContenido = async (req, res) => {
   }
 };
 
-
 /**
  * CU-024: Editar Curso
  * PUT /api/cursos/:id
  * Rol: Administrador
- *
- * Soporta multipart/form-data con:
- * - image (opcional)
  */
 export const updateCurso = async (req, res) => {
   try {
@@ -577,7 +662,6 @@ export const updateCurso = async (req, res) => {
       updateData.estado = estado;
     }
 
-    // NUEVO: capacidad_maxima editable
     if (capacidad_maxima !== undefined) {
       const cap = Number(capacidad_maxima);
       if (!Number.isFinite(cap) || cap <= 0) {
@@ -592,7 +676,6 @@ export const updateCurso = async (req, res) => {
     if (profesor_id !== undefined) updateData.profesor_id = profesor_id;
     if (franja_horaria_ids !== undefined) updateData.franja_horaria_ids = franja_horaria_ids;
 
-    // Si viene imagen, subir y setear imagen_url/path correctamente
     if (req.file) {
       const allowed = new Set(['image/png', 'image/jpeg', 'image/webp']);
       if (!allowed.has(req.file.mimetype)) {
@@ -604,7 +687,7 @@ export const updateCurso = async (req, res) => {
 
       const path = buildImagePath({
         entity: 'curso',
-        id, // IMPORTANTÍSIMO: aquí nunca debe ir undefined
+        id,
         originalname: safeName(req.file.originalname)
       });
 

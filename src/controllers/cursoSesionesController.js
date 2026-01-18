@@ -1,6 +1,8 @@
 // src/controllers/cursoSesionesController.js
+
 import { supabase } from '../config/supabase.js';
 import { notifyCursoSesionMeetLinkAssigned } from '../services/emailService.js';
+import { generarSesionesSemanalesPorRangoHora } from '../utils/generarSesionesCurso.js';
 
 // Helper verificar inscripción de estudiante a un curso
 async function assertInscrito({ cursoId, estudianteId }) {
@@ -20,25 +22,95 @@ async function assertInscrito({ cursoId, estudianteId }) {
   }
 }
 
+const normalizeSesionesRows = ({ cursoId, sesiones }) => {
+  if (!Array.isArray(sesiones) || sesiones.length === 0) {
+    const err = new Error('Debes enviar sesiones: [{ fecha_hora, duracion_min? }].');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return sesiones.map((s) => {
+    const fecha = new Date(s?.fecha_hora);
+
+    if (!s?.fecha_hora || Number.isNaN(fecha.getTime())) {
+      const err = new Error('Cada sesión debe tener fecha_hora ISO válida');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const dur = s?.duracion_min !== undefined ? Number(s.duracion_min) : 60;
+
+    if (!Number.isFinite(dur) || dur <= 0) {
+      const err = new Error('duracion_min debe ser un entero > 0');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    return {
+      curso_id: cursoId,
+      fecha_hora: fecha.toISOString(),
+      duracion_min: Math.trunc(dur),
+      estado: 'programada',
+      link_meet: null
+    };
+  });
+};
+
+const buildRowsFromRegla = ({ cursoId, curso, regla }) => {
+  const timezone = regla?.timezone || 'America/Bogota';
+  const days_of_week = regla?.days_of_week;
+  const hora_inicio = regla?.hora_inicio;
+  const hora_fin = regla?.hora_fin;
+  const exclude_dates = regla?.exclude_dates || [];
+  const estado = regla?.estado || 'programada';
+
+  if (!curso?.fecha_inicio || !curso?.fecha_fin) {
+    const err = new Error('El curso debe tener fecha_inicio y fecha_fin para generar sesiones por regla.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const sesiones = generarSesionesSemanalesPorRangoHora({
+    fecha_inicio: curso.fecha_inicio,
+    fecha_fin: curso.fecha_fin,
+    timezone,
+    days_of_week,
+    hora_inicio,
+    hora_fin,
+    exclude_dates,
+    estado
+  });
+
+  if (!Array.isArray(sesiones) || sesiones.length === 0) {
+    const err = new Error('La regla no generó sesiones dentro del rango fecha_inicio/fecha_fin.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return sesiones.map((s) => ({
+    curso_id: cursoId,
+    fecha_hora: s.fecha_hora,
+    duracion_min: s.duracion_min,
+    estado: s.estado,
+    link_meet: null
+  }));
+};
+
 /**
  * POST /api/cursos/:cursoId/sesiones
- * Admin crea N sesiones para un curso grupal
- * Body: { sesiones: [{ fecha_hora, duracion_min? }, ...] }
+ * Admin crea sesiones para un curso grupal
+ *
+ * Soporta 2 modos:
+ * 1) { sesiones: [{ fecha_hora, duracion_min? }, ...] }
+ * 2) { regla: { timezone, days_of_week, hora_inicio, hora_fin, exclude_dates?, estado? } }
  */
 export const crearSesionesCurso = async (req, res) => {
   try {
     const { cursoId } = req.params;
-    const { sesiones } = req.body;
+    const { sesiones, regla } = req.body || {};
 
     if (!cursoId) {
       return res.status(400).json({ success: false, message: 'cursoId es requerido' });
-    }
-
-    if (!Array.isArray(sesiones) || sesiones.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Debes enviar sesiones: [{ fecha_hora, duracion_min? }].'
-      });
     }
 
     // Validar curso
@@ -59,30 +131,13 @@ export const crearSesionesCurso = async (req, res) => {
       });
     }
 
-    // Normalizar y validar fechas
-    const rows = sesiones.map((s) => {
-      const fecha = new Date(s?.fecha_hora);
-      if (!s?.fecha_hora || Number.isNaN(fecha.getTime())) {
-        const err = new Error('Cada sesión debe tener fecha_hora ISO válida');
-        err.statusCode = 400;
-        throw err;
-      }
-
-      const dur = s?.duracion_min !== undefined ? Number(s.duracion_min) : 60;
-      if (!Number.isFinite(dur) || dur <= 0) {
-        const err = new Error('duracion_min debe ser un entero > 0');
-        err.statusCode = 400;
-        throw err;
-      }
-
-      return {
-        curso_id: cursoId,
-        fecha_hora: fecha.toISOString(),
-        duracion_min: dur,
-        estado: 'programada',
-        link_meet: null
-      };
-    });
+    // Construir rows según modo
+    let rows = [];
+    if (regla) {
+      rows = buildRowsFromRegla({ cursoId, curso, regla });
+    } else {
+      rows = normalizeSesionesRows({ cursoId, sesiones });
+    }
 
     // Insertar sesiones
     const { data: created, error: insErr } = await supabase
@@ -92,8 +147,7 @@ export const crearSesionesCurso = async (req, res) => {
 
     if (insErr) throw insErr;
 
-    // ✅ NUEVO: Vincular estas sesiones a TODOS los estudiantes actualmente inscritos
-    // (sin notificar por email)
+    // Vincular estas sesiones a TODOS los estudiantes actualmente inscritos (best-effort)
     try {
       const { data: insc, error: errInsc } = await supabase
         .from('inscripcion_curso')
@@ -119,7 +173,6 @@ export const crearSesionesCurso = async (req, res) => {
         if (errLink) throw errLink;
       }
     } catch (e) {
-      // Best-effort: si falla esto, igual devolvemos sesiones creadas
       console.error('⚠️ No se pudo vincular curso_sesion_estudiante al crear sesiones:', e?.message || e);
     }
 
@@ -151,7 +204,6 @@ export const listarSesionesCurso = async (req, res) => {
       return res.status(400).json({ success: false, message: 'cursoId es requerido' });
     }
 
-    // Validar acceso estudiante
     if (req.user?.rol === 'estudiante') {
       await assertInscrito({ cursoId, estudianteId: req.user.id });
     }
@@ -179,8 +231,6 @@ export const listarSesionesCurso = async (req, res) => {
  * PUT /api/cursos/:cursoId/sesiones/:sesionId/meet
  * Admin asigna link Meet a sesión de curso
  * Body: { link_meet }
- *
- * Regla: solo se notifica aquí (no al crear sesión)
  */
 export const asignarLinkMeetCursoSesion = async (req, res) => {
   try {
@@ -201,7 +251,6 @@ export const asignarLinkMeetCursoSesion = async (req, res) => {
       });
     }
 
-    // Traer sesión curso (debe pertenecer al curso)
     const { data: sesion, error: sesErr } = await supabase
       .from('curso_sesion')
       .select('id, curso_id, fecha_hora, estado, link_meet')
@@ -223,7 +272,6 @@ export const asignarLinkMeetCursoSesion = async (req, res) => {
       });
     }
 
-    // Actualizar
     const { data: updated, error: upErr } = await supabase
       .from('curso_sesion')
       .update({ link_meet: link_meet.trim(), updated_at: new Date().toISOString() })
@@ -233,8 +281,6 @@ export const asignarLinkMeetCursoSesion = async (req, res) => {
 
     if (upErr) throw upErr;
 
-    // ✅ NUEVO: notificar a todos los inscritos del curso
-    // Best-effort: si falla el envío, igual devolvemos success (y reportamos resultado)
     let notifyResult = null;
     try {
       notifyResult = await notifyCursoSesionMeetLinkAssigned({ cursoSesionId: sesionId });
