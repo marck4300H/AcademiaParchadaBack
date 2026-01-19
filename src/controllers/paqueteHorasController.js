@@ -164,11 +164,17 @@ export const comprarPaqueteHoras = async (req, res) => {
  * CU-033: Agendar Sesión de Paquete
  * Permite agendar una sesión usando horas del paquete
  * ⭐ REQUIERE AUTENTICACIÓN
+ * ✅ SOPORTA DOCUMENTO (documento_url opcional en body)
  */
 export const agendarSesion = async (req, res) => {
   try {
     const { compra_id } = req.params;
-    const { fecha_hora, duracion_horas, descripcion_estudiante } = req.body;
+    const { 
+      fecha_hora, 
+      duracion_horas, 
+      descripcion_estudiante,
+      documento_url  // ← NUEVO: URL del documento previamente subido
+    } = req.body;
 
     if (!req.user) {
       return res.status(401).json({
@@ -292,7 +298,8 @@ export const agendarSesion = async (req, res) => {
         {
           compra_id: compra.id,
           profesor_id: profesorAsignado.id,
-          descripcion_estudiante,
+          descripcion_estudiante: descripcion_estudiante || null,
+          documento_url: documento_url || null,  // ← NUEVO
           fecha_hora: fechaHoraToStore,
           franja_horaria_ids: franjasUtilizadas,
           estado: 'programada'
@@ -341,6 +348,7 @@ export const agendarSesion = async (req, res) => {
           fecha_hora: sesion.fecha_hora,
           estado: sesion.estado,
           descripcion_estudiante: sesion.descripcion_estudiante,
+          documento_url: sesion.documento_url,  // ← NUEVO EN RESPONSE
           franja_horaria_ids: sesion.franja_horaria_ids
         },
         profesor_asignado: {
