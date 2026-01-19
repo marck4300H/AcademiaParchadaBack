@@ -659,3 +659,33 @@ export const obtenerEstadoCompra = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Error consultando compra', error: error.message });
   }
 };
+/**
+ * GET /api/pagos/compras/:compraId/estado
+ * Unificado MP + Wompi (lee tabla compra)
+ */
+export const obtenerEstadoCompraUnificado = async (req, res) => {
+  try {
+    const { compraId } = req.params;
+    const { data, error } = await supabase
+      .from('compra')
+      .select(`
+        id,
+        tipo_compra,
+        estado_pago,
+        monto_total,
+        proveedor_pago,
+        fecha_compra,
+        wompi_transaction_id,
+        mp_payment_id,
+        mp_status,
+        wompi_status
+      `)
+      .eq('id', compraId)
+      .single();
+    if (error || !data) return res.status(404).json({ success: false, message: 'Compra no encontrada' });
+    return res.json({ success: true, data });
+  } catch (error) {
+    console.error('Error obtenerEstadoCompraUnificado:', error);
+    return res.status(500).json({ success: false, message: 'Error consultando compra' });
+  }
+};
