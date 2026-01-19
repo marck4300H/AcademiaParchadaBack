@@ -4,7 +4,8 @@ import express from 'express';
 import {
   crearCheckoutMercadoPago,
   webhookMercadoPago,
-  obtenerEstadoCompra
+  obtenerEstadoCompra,
+  obtenerEstadoCompraUnificado
 } from '../controllers/pagosMercadoPagoController.js';
 
 import { verifyToken } from '../utils/jwt.js';
@@ -89,5 +90,11 @@ router.post("/wompi/checkout", optionalAuth, crearCheckoutWompi);
 
 
 router.post("/wompi/eventos", webhookWompi);
+/**
+ * Endpoint unificado MP + Wompi (público, sin auth)
+ * GET /api/pagos/compras/:compraId/estado
+ */
+router.get('/compras/:compraId/estado', obtenerEstadoCompraUnificado);
+
 
 export default router;
