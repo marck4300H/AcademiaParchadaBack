@@ -793,10 +793,112 @@ export const sendPaqueteHorasProfesorAsignadoEmail = async ({
   );
 };
 
+/**
+ * ✅ Notificar SOLO al profesor cuando se agenda sesión desde paquete de horas
+ * (el estudiante ya sabe que agendó, no necesita email confirmación)
+ */
 export const notifyProfesorAfterPaqueteHorasSessionCreated = async ({ sesionId }) => {
-  // (sin cambios: aquí solo envías 1 correo)
-  // ... deja tu implementación original tal cual ...
+  const result = {
+    profesor: { ok: false, error: null, to: null, resendId: null },
+  };
+
+  // 1) Obtener sesión
+  const { data: sesion, error: errSesion } = await supabase
+    .from('sesion_clase')
+    .select('id, compra_id, profesor_id, fecha_hora')
+    .eq('id', sesionId)
+    .single();
+
+  if (errSesion || !sesion?.id) {
+    throw new Error(`notifyProfesorAfterPaqueteHorasSessionCreated: sesion_clase no encontrada (${sesionId})`);
+  }
+
+  // 2) Obtener compra
+  const { data: compra, error: errCompra } = await supabase
+    .from('compra')
+    .select('id, tipo_compra, estudiante_id, clase_personalizada_id, mp_raw, wompi_raw')
+    .eq('id', sesion.compra_id)
+    .single();
+
+  if (errCompra || !compra?.id) {
+    throw new Error(`notifyProfesorAfterPaqueteHorasSessionCreated: compra no encontrada (${sesion.compra_id})`);
+  }
+
+  if (compra.tipo_compra !== 'paquete_horas') {
+    throw new Error(
+      `notifyProfesorAfterPaqueteHorasSessionCreated: compra no es paquete_horas (${compra.id}). Es: ${compra.tipo_compra}`
+    );
+  }
+
+  // 3) Obtener estudiante
+  const { data: estudiante } = await supabase
+    .from('usuario')
+    .select('id, nombre, apellido, email, telefono, timezone')
+    .eq('id', compra.estudiante_id)
+    .single();
+
+  // 4) Obtener profesor
+  const { data: profesor } = await supabase
+    .from('usuario')
+    .select('id, nombre, apellido, email, timezone')
+    .eq('id', sesion.profesor_id)
+    .single();
+
+  // 5) Obtener asignatura
+  let asignaturaNombre = 'Clase personalizada';
+  try {
+    if (compra.clase_personalizada_id) {
+      const { data: clase } = await supabase
+        .from('clase_personalizada')
+        .select('id, asignatura:asignatura_id(id, nombre)')
+        .eq('id', compra.clase_personalizada_id)
+        .single();
+      asignaturaNombre = clase?.asignatura?.nombre || asignaturaNombre;
+    }
+  } catch (e) {
+    console.error('⚠️ No se pudo obtener asignatura para paquete horas:', e?.message || e);
+  }
+
+  // 6) Metadata (depende si vino de MP o Wompi, aunque paquete es directo)
+  // Como paquete_horas NO pasa por MP/Wompi al agendar, la duración la calculamos desde las franjas
+  const duracionHoras = sesion?.franja_horaria_ids?.length || 1; // Cada franja = 1 hora
+  const fechaHoraIso = sesion?.fecha_hora || new Date().toISOString();
+  const profesorTZ = profesor?.timezone || DEFAULT_TZ;
+
+  // 7) Enviar email al profesor
+  try {
+    const profesorEmail = normalizeEmail(profesor?.email);
+    if (!profesorEmail) throw new Error('Profesor sin email en BD.');
+
+    const sent = await sendPaqueteHorasProfesorAsignadoEmail({
+      profesorEmail,
+      sesionId: sesion.id,
+      asignaturaNombre,
+      fechaHoraIso,
+      duracionHoras,
+      profesorTimeZone: profesorTZ,
+      estudiante,
+    });
+
+    result.profesor = {
+      ok: true,
+      error: null,
+      to: sent?.to ?? profesorEmail,
+      resendId: sent?.resendId ?? null,
+    };
+  } catch (e) {
+    result.profesor.error = e?.message || String(e);
+    result.profesor.to = normalizeEmail(profesor?.email);
+    console.error('❌ notifyProfesorAfterPaqueteHorasSessionCreated: fallo profesor', {
+      sesionId,
+      error: result.profesor.error,
+    });
+  }
+
+  console.log('✅ notifyProfesorAfterPaqueteHorasSessionCreated final', { sesionId, result });
+  return result;
 };
+
 
 // =======================================================
 // NUEVO: Curso grupal => notificar a inscritos cuando hay Meet

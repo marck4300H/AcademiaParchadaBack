@@ -1,60 +1,66 @@
-import { body, param } from 'express-validator';
+import { body } from 'express-validator';
 
 export const validarComprarPaquete = [
   body('clase_personalizada_id')
+    .notEmpty()
+    .withMessage('clase_personalizada_id es requerido')
     .isUUID()
-    .withMessage('El ID de la clase debe ser un UUID válido'),
-  
+    .withMessage('clase_personalizada_id debe ser un UUID válido'),
+
   body('cantidad_horas')
-    .isInt({ min: 1, max: 20 })
-    .withMessage('La cantidad de horas debe ser entre 1 y 20'),
-  
-  body('estudiante')
-    .optional()
-    .isObject()
-    .withMessage('Los datos del estudiante deben ser un objeto'),
-  
+    .notEmpty()
+    .withMessage('cantidad_horas es requerido')
+    .isInt({ min: 1 })
+    .withMessage('cantidad_horas debe ser un entero mayor a 0'),
+
+  // Validaciones de estudiante (si no hay token)
   body('estudiante.email')
     .optional()
     .isEmail()
-    .withMessage('Email inválido'),
-  
+    .withMessage('email debe ser válido'),
+
   body('estudiante.nombre')
     .optional()
     .notEmpty()
-    .withMessage('El nombre es requerido'),
-  
+    .withMessage('nombre del estudiante es requerido'),
+
   body('estudiante.apellido')
     .optional()
     .notEmpty()
-    .withMessage('El apellido es requerido'),
-  
+    .withMessage('apellido del estudiante es requerido'),
+
   body('estudiante.password')
     .optional()
     .isLength({ min: 6 })
-    .withMessage('La contraseña debe tener al menos 6 caracteres'),
-  
+    .withMessage('password debe tener al menos 6 caracteres'),
+
   body('estudiante.telefono')
     .optional()
-    .matches(/^\+?[0-9]{10,15}$/)
-    .withMessage('Formato de teléfono inválido')
+    .isMobilePhone()
+    .withMessage('telefono debe ser válido')
 ];
 
 export const validarAgendarSesion = [
-  param('compra_id')
-    .isUUID()
-    .withMessage('El ID de la compra debe ser un UUID válido'),
-  
   body('fecha_hora')
+    .notEmpty()
+    .withMessage('fecha_hora es requerida')
     .isISO8601()
-    .withMessage('Formato de fecha inválido. Usa ISO 8601 (YYYY-MM-DDTHH:MM:SS±HH:MM)'),
-  
+    .withMessage('fecha_hora debe estar en formato ISO 8601'),
+
   body('duracion_horas')
-    .isInt({ min: 1, max: 8 })
-    .withMessage('La duración debe ser entre 1 y 8 horas'),
-  
+    .notEmpty()
+    .withMessage('duracion_horas es requerida')
+    .isInt({ min: 1 })
+    .withMessage('duracion_horas debe ser un entero mayor a 0'),
+
   body('descripcion_estudiante')
     .optional()
     .isString()
-    .withMessage('La descripción debe ser texto')
+    .withMessage('descripcion_estudiante debe ser texto'),
+
+  // ← NUEVO: Validación opcional de documento_url
+  body('documento_url')
+    .optional()
+    .isURL()
+    .withMessage('documento_url debe ser una URL válida')
 ];
