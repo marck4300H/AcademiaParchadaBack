@@ -18,7 +18,6 @@ const WOMPI_PUBLIC_KEY = process.env.WOMPI_PUBLIC_KEY;
 const WOMPI_PRIVATE_KEY = process.env.WOMPI_PRIVATE_KEY;
 const WOMPI_EVENTS_SECRET = process.env.WOMPI_EVENTS_SECRET;
 const WOMPI_INTEGRITY_SECRET = process.env.WOMPI_INTEGRITY_SECRET;
-
 const FRONTENDURL = process.env.FRONTENDURL || "http://localhost:5173";
 const BACKENDPUBLICURL =
   process.env.BACKENDPUBLICURL || `http://localhost:${process.env.PORT || 5000}`;
@@ -73,7 +72,6 @@ const verifyEventSignatureBestEffort = (req) => {
     const payload = JSON.stringify(req.body || {});
     const computed = crypto.createHmac("sha256", secret).update(payload).digest("hex");
     const ok = safeString(signature).includes(computed);
-
     if (!ok) warn("Firma no coincide (best-effort). signature:", signature, "computed:", computed);
     return { ok, reason: ok ? "signature-ok" : "signature-mismatch" };
   } catch (e) {
@@ -84,7 +82,6 @@ const verifyEventSignatureBestEffort = (req) => {
 
 const fetchWompiTransaction = async (transactionId) => {
   if (!transactionId) return null;
-
   if (!WOMPI_PRIVATE_KEY) {
     warn("WOMPI_PRIVATE_KEY no está configurada; no se puede consultar transacción a Wompi.");
     return null;
@@ -107,9 +104,7 @@ const fetchWompiTransaction = async (transactionId) => {
           "Content-Type": "application/json",
         },
       });
-
       const json = await resp.json().catch(() => null);
-
       if (!resp.ok) {
         warn("No OK consultando transacción", url, "status", resp.status, "body", json);
         continue;
@@ -121,7 +116,6 @@ const fetchWompiTransaction = async (transactionId) => {
       warn("Error consultando", url, e?.message);
     }
   }
-
   warn("No se pudo consultar transacción a Wompi con endpoints candidatos.");
   return null;
 };
@@ -140,6 +134,7 @@ export const crearCheckoutWompi = async (req, res) => {
       fecha_hora,
       estudiante_timezone,
       descripcion_estudiante,
+      documento_url, // ← AGREGADO
     } = req.body || {};
 
     if (!tipo_compra) {
@@ -175,8 +170,8 @@ export const crearCheckoutWompi = async (req, res) => {
       }
 
       const { email, password, nombre, apellido, telefono, timezone } = estudiante;
-
       const { data: existente } = await supabase.from("usuario").select("id").eq("email", email).maybeSingle();
+
       if (existente?.id) {
         return res.status(400).json({
           success: false,
@@ -186,7 +181,6 @@ export const crearCheckoutWompi = async (req, res) => {
 
       const salt = await bcrypt.genSalt(10);
       const passwordHash = await bcrypt.hash(password, salt);
-
       const { data: nuevoEst, error: errNuevo } = await supabase
         .from("usuario")
         .insert({
@@ -225,7 +219,7 @@ export const crearCheckoutWompi = async (req, res) => {
 
       if (error || !curso) return res.status(404).json({ success: false, message: "Curso no encontrado" });
 
-      // ✅ NUEVO: bloquear si ya está inscrito
+      // Bloquear si ya está inscrito
       const { data: inscExist, error: inscErr } = await supabase
         .from("inscripcion_curso")
         .select("id")
@@ -234,7 +228,6 @@ export const crearCheckoutWompi = async (req, res) => {
         .maybeSingle();
 
       if (inscErr) throw inscErr;
-
       if (inscExist?.id) {
         return res.status(400).json({
           success: false,
@@ -242,16 +235,14 @@ export const crearCheckoutWompi = async (req, res) => {
         });
       }
 
-      // ✅ NUEVO: validar cupo
+      // Validar cupo
       const capMax = Number(curso.capacidad_maxima ?? 25);
-
       const { count: inscritosCount, error: countErr } = await supabase
         .from("inscripcion_curso")
         .select("id", { count: "exact", head: true })
         .eq("curso_id", curso.id);
 
       if (countErr) throw countErr;
-
       if (Number.isFinite(capMax) && capMax > 0 && (inscritosCount || 0) >= capMax) {
         return res.status(400).json({
           success: false,
@@ -266,6 +257,7 @@ export const crearCheckoutWompi = async (req, res) => {
       if (!clase_personalizada_id) {
         return res.status(400).json({ success: false, message: "clase_personalizada_id es requerido" });
       }
+
       if (!fecha_hora) {
         return res.status(400).json({ success: false, message: "fecha_hora es requerida para clase_personalizada" });
       }
@@ -294,13 +286,13 @@ export const crearCheckoutWompi = async (req, res) => {
 
       titulo = "Clase personalizada";
       monto_total = Number(clase.precio);
-
       metadata = {
         ...metadata,
         clase_personalizada_id: clase.id,
         fecha_hora: String(fecha_hora),
         estudiante_timezone: estudianteTimeZone,
         descripcion_estudiante: descripcion_estudiante || null,
+        documento_url: documento_url || null, // ← AGREGADO
         profesor_id: asignacion.profesor?.id || null,
         franja_horaria_ids: asignacion.franjasUtilizadas,
         profesor_timezone: asignacion.profesorTimeZone || null,
@@ -347,13 +339,7 @@ export const crearCheckoutWompi = async (req, res) => {
       wompi_reference: null,
     };
 
-    // no asignar horas aquí (se asignan en webhook)
-    if (tipo_compra === "paquete_horas") {
-      // no-op
-    }
-
     log("Insertando compra pendiente", { requestId, compraInsert });
-
     const { data: compra, error: errCompra } = await supabase.from("compra").insert(compraInsert).select().single();
     if (errCompra) throw errCompra;
 
@@ -361,7 +347,6 @@ export const crearCheckoutWompi = async (req, res) => {
     const reference = generateReference(compra.id);
     const amount_in_cents = Math.round(Number(monto_total) * 100);
     const currency = "COP";
-
     const signature_integrity = buildIntegritySignature({
       reference,
       amount_in_cents: String(amount_in_cents),
@@ -430,7 +415,6 @@ export const webhookWompi = async (req, res) => {
     const body = req.body || {};
     const eventId = body?.id || body?.event?.id || body?.data?.id || null;
     const eventType = body?.type || body?.event?.type || body?.event_type || "unknown";
-
     log("Evento recibido", { requestId, eventId, eventType });
 
     const normalizedEventId = eventId ? String(eventId) : `no-id-${requestId}`;
@@ -457,7 +441,6 @@ export const webhookWompi = async (req, res) => {
 
     const transactionId =
       body?.data?.transaction?.id || body?.data?.id || body?.transaction?.id || body?.transaction_id || null;
-
     const reference =
       body?.data?.transaction?.reference || body?.data?.reference || body?.reference || null;
 
@@ -465,12 +448,10 @@ export const webhookWompi = async (req, res) => {
 
     const txResp = await fetchWompiTransaction(transactionId);
     const txData = txResp?.data || txResp || null;
-
     const finalReference = reference || txData?.reference || txData?.data?.reference || null;
 
     const status =
       txData?.status || txData?.data?.status || body?.data?.transaction?.status || body?.data?.status || null;
-
     const statusMessage =
       txData?.status_message ||
       txData?.data?.status_message ||
@@ -502,7 +483,6 @@ export const webhookWompi = async (req, res) => {
     }
 
     const nuevoEstado = mapWompiStatusToEstadoPago(status);
-
     log("Actualizando compra", { requestId, compraId: compra.id, nuevoEstado });
 
     await supabase
@@ -525,7 +505,7 @@ export const webhookWompi = async (req, res) => {
 
     // ===== POST-PAGO SEGÚN tipo_compra =====
 
-    // CURSO => inscripcion_curso + link a sesiones + email
+    // CURSO
     if (compra.tipo_compra === "curso" && compra.curso_id) {
       try {
         log("Post-pago curso init", { requestId, compraId: compra.id });
@@ -548,7 +528,7 @@ export const webhookWompi = async (req, res) => {
           if (errIns) throw errIns;
         }
 
-        // Vincular sesiones existentes del curso al estudiante
+        // Vincular sesiones
         const { data: sesiones, error: errSes } = await supabase
           .from("curso_sesion")
           .select("id")
@@ -570,7 +550,6 @@ export const webhookWompi = async (req, res) => {
         }
 
         await notifyCompraCursoAfterPaymentApproved({ compraId: compra.id });
-
         log("Post-pago curso OK", { requestId, compraId: compra.id });
       } catch (e) {
         errLog("Error post-pago curso", e?.message || e, e);
@@ -579,13 +558,12 @@ export const webhookWompi = async (req, res) => {
       return res.status(200).send("OK");
     }
 
-    // PAQUETE HORAS => asignar horas SOLO cuando esté completado + email
+    // PAQUETE HORAS
     if (compra.tipo_compra === "paquete_horas") {
       try {
         log("Post-pago paquete_horas init", { requestId, compraId: compra.id });
 
         const horas = Number(meta?.cantidad_horas);
-
         if (!horas || horas <= 0) {
           warn("compra paquete_horas sin metadata.cantidad_horas válida", {
             requestId,
@@ -612,7 +590,6 @@ export const webhookWompi = async (req, res) => {
         }
 
         await notifyPaqueteHorasAfterPaymentApproved({ compraId: compra.id });
-
         log("Post-pago paquete_horas OK", { requestId, compraId: compra.id });
       } catch (e) {
         errLog("Error post-pago paquete_horas", e?.message || e, e);
@@ -621,7 +598,7 @@ export const webhookWompi = async (req, res) => {
       return res.status(200).send("OK");
     }
 
-    // CLASE PERSONALIZADA => crear sesion_clase (idempotente) + email
+    // CLASE PERSONALIZADA
     if (compra.tipo_compra === "clase_personalizada") {
       try {
         log("Post-pago clase_personalizada init", { requestId, compraId: compra.id });
@@ -675,7 +652,6 @@ export const webhookWompi = async (req, res) => {
         }
 
         await notifyClasePersonalizadaAfterSessionCreated({ sesionId: sesionCreada.id });
-
         log("Post-pago clase_personalizada OK", { requestId, sesionId: sesionCreada.id });
       } catch (e) {
         errLog("Error post-pago clase_personalizada", e?.message || e, e);
