@@ -21,6 +21,8 @@ import materialEstudioRoutes from './routes/materialEstudio.routes.js';
 import seccionCursoRoutes from './routes/seccionCurso.routes.js';
 import cursoSesionesRoutes from './routes/cursoSesiones.routes.js';
 import documentosRoutes from './routes/documentos.routes.js';
+import disponibilidadRoutes from './routes/disponibilidad.routes.js'; // ← NUEVO
+
 
 
 
@@ -129,6 +131,7 @@ app.use('/api/material-estudio', materialEstudioRoutes);
 app.use('/api/cursos', seccionCursoRoutes);
 app.use('/api/cursos', cursoSesionesRoutes);
 app.use('/api/documentos', documentosRoutes);
+app.use('/api/disponibilidad', disponibilidadRoutes);
 
 
 
