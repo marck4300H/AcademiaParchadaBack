@@ -979,3 +979,25 @@ export const notifyCursoSesionMeetLinkAssigned = async ({ cursoSesionId }) => {
 
   return { ok: errors.length === 0, sent: sentCount, errors };
 };
+// ============================================
+// NUEVO: Reset password
+// ============================================
+export const sendPasswordResetEmail = async ({ to, nombre = null, resetLink }) => {
+  return sendEmailStrict(
+    {
+      to,
+      subject: 'Restablecer contraseña - Parche Académico',
+      html: wrapHtml(`
+${nombre ? `Hola ${safe(nombre)},` : 'Hola,'}
+
+Recibimos una solicitud para restablecer tu contraseña.
+
+👉 Para crear una nueva contraseña, abre este enlace:
+<a href="${safe(resetLink)}" target="_blank" rel="noopener noreferrer">${safe(resetLink)}</a>
+
+Si tú no solicitaste este cambio, puedes ignorar este correo.
+`),
+    },
+    2
+  );
+};

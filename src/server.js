@@ -21,7 +21,7 @@ import materialEstudioRoutes from './routes/materialEstudio.routes.js';
 import seccionCursoRoutes from './routes/seccionCurso.routes.js';
 import cursoSesionesRoutes from './routes/cursoSesiones.routes.js';
 import documentosRoutes from './routes/documentos.routes.js';
-import disponibilidadRoutes from './routes/disponibilidad.routes.js'; // ← NUEVO
+import disponibilidadRoutes from './routes/disponibilidad.routes.js'; 
 
 
 

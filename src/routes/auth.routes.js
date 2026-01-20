@@ -2,6 +2,7 @@ import express from 'express';
 import { register, login, logout, getMe, loginGoogle } from '../controllers/authController.js';
 import { registerValidator, loginValidator, validate } from '../validators/authValidator.js';
 import { authenticate } from '../middlewares/auth.js';
+import { forgotPassword, resetPassword } from '../controllers/passwordResetController.js';
 
 const router = express.Router();
 
@@ -40,5 +41,9 @@ router.post('/logout', authenticate, logout);
  * @access  Private
  */
 router.get('/me', authenticate, getMe);
+
+router.post('/forgot-password', forgotPassword);
+
+router.post('/reset-password', resetPassword);
 
 export default router;
