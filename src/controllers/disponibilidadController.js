@@ -1,5 +1,4 @@
 // src/controllers/disponibilidadController.js
-
 import { supabase } from '../config/supabase.js';
 import { DateTime } from 'luxon';
 import { buscarFranjasConsecutivas } from '../utils/franjaHelpers.js';
@@ -8,21 +7,17 @@ const DEFAULT_TZ = 'America/Bogota';
 
 /**
  * GET /api/disponibilidad/franjas
- * Obtiene franjas horarias disponibles para una fecha y asignatura específicas
- * 
  * Query params:
  * - fecha: YYYY-MM-DD (ej: "2026-01-21")
- * - asignatura_id: UUID de la asignatura
- * - duracion_horas: número entero (1, 2, 3, etc.)
- * - timezone: (opcional) timezone del cliente (default: "America/Bogota")
- * 
- * PÚBLICO - No requiere autenticación
+ * - asignatura_id: UUID
+ * - duracion_horas: entero >= 1
+ * - timezone: (opcional) timezone del cliente (default: America/Bogota)
  */
 export const obtenerFranjasDisponibles = async (req, res) => {
   try {
     const { fecha, asignatura_id, duracion_horas, timezone } = req.query;
 
-    // ========== VALIDACIONES ==========
+    // ===== Validaciones =====
     if (!fecha) {
       return res.status(400).json({
         success: false,
@@ -54,9 +49,8 @@ export const obtenerFranjasDisponibles = async (req, res) => {
 
     const clienteTimeZone = timezone || DEFAULT_TZ;
 
-    // ========== PARSEAR FECHA ==========
+    // ===== Parse de fecha (día) en TZ del cliente =====
     const dtCliente = DateTime.fromISO(fecha, { zone: clienteTimeZone }).startOf('day');
-    
     if (!dtCliente.isValid) {
       return res.status(400).json({
         success: false,
@@ -64,10 +58,11 @@ export const obtenerFranjasDisponibles = async (req, res) => {
       });
     }
 
-    // ========== OBTENER PROFESORES DE LA ASIGNATURA ==========
+    // ===== Obtener profesores de la asignatura =====
     const { data: profesoresAsignatura, error: errorProfesores } = await supabase
       .from('profesor_asignatura')
-      .select(`
+      .select(
+        `
         profesor_id,
         usuario:profesor_id (
           id,
@@ -76,13 +71,11 @@ export const obtenerFranjasDisponibles = async (req, res) => {
           email,
           timezone
         )
-      `)
+      `
+      )
       .eq('asignatura_id', asignatura_id);
 
-    if (errorProfesores) {
-      console.error('Error al obtener profesores:', errorProfesores);
-      throw errorProfesores;
-    }
+    if (errorProfesores) throw errorProfesores;
 
     if (!profesoresAsignatura || profesoresAsignatura.length === 0) {
       return res.status(200).json({
@@ -91,6 +84,7 @@ export const obtenerFranjasDisponibles = async (req, res) => {
           fecha: dtCliente.toISODate(),
           asignatura_id,
           duracion_horas: duracion,
+          timezone: clienteTimeZone,
           franjas_disponibles: [],
           total: 0,
           mensaje: 'No hay profesores disponibles para esta asignatura',
@@ -98,10 +92,8 @@ export const obtenerFranjasDisponibles = async (req, res) => {
       });
     }
 
-    // ========== DÍAS DE LA SEMANA ==========
     const diasSemana = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
 
-    // ========== BUSCAR DISPONIBILIDAD POR CADA PROFESOR ==========
     const bloquesDisponibles = [];
 
     for (const pa of profesoresAsignatura) {
@@ -109,11 +101,13 @@ export const obtenerFranjasDisponibles = async (req, res) => {
       const profesor = pa.usuario;
       const profesorTZ = profesor?.timezone || DEFAULT_TZ;
 
-      // Convertir fecha cliente a timezone del profesor
-      const dtProfesor = dtCliente.setZone(profesorTZ);
-      const diaSemana = diasSemana[dtProfesor.weekday % 7]; // luxon: 1..7
+      // Convertir "el día del cliente" al TZ del profesor (mismo instante)
+      const dtProfesorBase = dtCliente.setZone(profesorTZ);
 
-      // Obtener franjas del profesor para ese día
+      // Día de semana en español
+      const diaSemana = diasSemana[dtProfesorBase.weekday % 7];
+
+      // Obtener franjas del profesor para ese día de semana
       const { data: franjasDelDia, error: errorFranjasDelDia } = await supabase
         .from('franja_horaria')
         .select('*')
@@ -122,77 +116,61 @@ export const obtenerFranjasDisponibles = async (req, res) => {
         .order('hora_inicio', { ascending: true });
 
       if (errorFranjasDelDia || !franjasDelDia || franjasDelDia.length === 0) {
-        continue; // Sin franjas para este profesor en ese día
+        continue;
       }
 
-      // Buscar bloques consecutivos de N horas
-      const horasDelDia = [];
-      
-      // Generar todas las posibles horas de inicio (desde 00:00 hasta 23:00)
+      // Rango del día EN TZ del profesor, convertido a UTC para comparar con fecha_hora (timestamptz)
+      const inicioDiaUTC = dtProfesorBase.startOf('day').toUTC().toISO();
+      const finDiaUTC = dtProfesorBase.endOf('day').toUTC().toISO();
+
+      // Generar posibles horas de inicio (00:00 a 23:00)
       for (let hora = 0; hora < 24; hora++) {
         const horaInicio = `${hora.toString().padStart(2, '0')}:00:00`;
-        
-        const franjasConsecutivas = buscarFranjasConsecutivas(
-          franjasDelDia,
-          horaInicio,
-          duracion
-        );
 
-        if (franjasConsecutivas) {
-          horasDelDia.push({
-            hora_inicio: horaInicio,
-            franja_horaria_ids: franjasConsecutivas,
-          });
-        }
-      }
+        const franjasConsecutivas = buscarFranjasConsecutivas(franjasDelDia, horaInicio, duracion);
+        if (!franjasConsecutivas) continue;
 
-      // Para cada bloque encontrado, verificar si NO tiene conflicto con sesiones programadas
-      for (const bloque of horasDelDia) {
-        // Construir fecha_hora completa en TZ del profesor
-        const [hh, mm, ss] = bloque.hora_inicio.split(':').map(Number);
-        const fechaHoraProfesor = dtProfesor.set({ hour: hh, minute: mm, second: ss });
-        const fechaHoraUTC = fechaHoraProfesor.toUTC().toISO();
-
-        // Verificar si hay sesión programada en esas franjas
+        // Verificar conflicto SOLO en el día consultado
         const { data: sesionesExistentes, error: errorSesiones } = await supabase
           .from('sesion_clase')
           .select('id')
           .eq('profesor_id', profesorId)
           .eq('estado', 'programada')
-          .overlaps('franja_horaria_ids', bloque.franja_horaria_ids);
+          .gte('fecha_hora', inicioDiaUTC)
+          .lte('fecha_hora', finDiaUTC)
+          .overlaps('franja_horaria_ids', franjasConsecutivas);
 
-        if (errorSesiones) {
-          console.error('Error al verificar sesiones:', errorSesiones);
-          continue;
-        }
+        if (errorSesiones) continue;
 
-        // Si NO hay sesiones, el bloque está disponible
         if (!sesionesExistentes || sesionesExistentes.length === 0) {
-          // Calcular hora_fin
-          const [hh, mm, ss] = bloque.hora_inicio.split(':').map(Number);
-          const fechaHoraInicio = dtProfesor.set({ hour: hh, minute: mm, second: ss });
-          const fechaHoraFin = fechaHoraInicio.plus({ hours: duracion });
+          // construir fecha/hora inicio-fin en TZ profesor
+          const [hh, mm, ss] = horaInicio.split(':').map(Number);
+          const inicioProfesor = dtProfesorBase.set({ hour: hh, minute: mm, second: ss });
+          const finProfesor = inicioProfesor.plus({ hours: duracion });
 
           bloquesDisponibles.push({
-            hora_inicio: bloque.hora_inicio,
-            hora_fin: fechaHoraFin.toFormat('HH:mm:ss'),
-            fecha_hora_inicio_iso: fechaHoraUTC,
-            fecha_hora_fin_iso: fechaHoraFin.toUTC().toISO(),
+            hora_inicio: horaInicio,
+            hora_fin: finProfesor.toFormat('HH:mm:ss'),
+            fecha_hora_inicio_iso: inicioProfesor.toUTC().toISO(),
+            fecha_hora_fin_iso: finProfesor.toUTC().toISO(),
             duracion_horas: duracion,
-            franja_horaria_ids: bloque.franja_horaria_ids,
+            franja_horaria_ids: franjasConsecutivas,
             profesor: {
               id: profesor?.id,
               nombre: profesor?.nombre,
               apellido: profesor?.apellido,
               email: profesor?.email,
+              timezone: profesorTZ,
             },
           });
         }
       }
     }
 
-    // ========== ORDENAR Y RETORNAR ==========
-    bloquesDisponibles.sort((a, b) => a.hora_inicio.localeCompare(b.hora_inicio));
+    bloquesDisponibles.sort((a, b) => {
+      const c = a.fecha_hora_inicio_iso.localeCompare(b.fecha_hora_inicio_iso);
+      return c !== 0 ? c : a.hora_inicio.localeCompare(b.hora_inicio);
+    });
 
     return res.status(200).json({
       success: true,
@@ -205,7 +183,6 @@ export const obtenerFranjasDisponibles = async (req, res) => {
         total: bloquesDisponibles.length,
       },
     });
-
   } catch (error) {
     console.error('❌ Error en obtenerFranjasDisponibles:', error);
     return res.status(500).json({
