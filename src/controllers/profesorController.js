@@ -24,7 +24,7 @@ const generateTempPassword = () => {
  */
 export const createProfesor = async (req, res) => {
   try {
-    const { email, nombre, apellido, telefono, asignaturas } = req.body;
+    const { email, nombre, apellido, telefono, asignaturas, timezone } = req.body;
 
     // 1. Verificar que el email no exista
     const { data: existingUser } = await supabase
@@ -34,10 +34,7 @@ export const createProfesor = async (req, res) => {
       .single();
 
     if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: 'El email ya está registrado'
-      });
+      return res.status(400).json({ success: false, message: 'El email ya está registrado' });
     }
 
     // 2. Verificar que todas las asignaturas existan
@@ -47,10 +44,7 @@ export const createProfesor = async (req, res) => {
       .in('id', asignaturas);
 
     if (asignaturasError || asignaturasExistentes.length !== asignaturas.length) {
-      return res.status(400).json({
-        success: false,
-        message: 'Una o más asignaturas no existen'
-      });
+      return res.status(400).json({ success: false, message: 'Una o más asignaturas no existen' });
     }
 
     // 3. Generar contraseña temporal y hashearla
@@ -68,8 +62,9 @@ export const createProfesor = async (req, res) => {
           nombre,
           apellido,
           telefono: telefono || null,
-          rol: 'profesor'
-        }
+          rol: 'profesor',
+          ...(timezone !== undefined ? { timezone } : {}),
+        },
       ])
       .select()
       .single();
@@ -79,14 +74,14 @@ export const createProfesor = async (req, res) => {
       return res.status(500).json({
         success: false,
         message: 'Error al crear el profesor',
-        error: insertError.message
+        error: insertError.message,
       });
     }
 
     // 5. Insertar relaciones en profesor_asignatura
-    const asignaturasRelaciones = asignaturas.map(asignaturaId => ({
+    const asignaturasRelaciones = asignaturas.map((asignaturaId) => ({
       profesor_id: newProfesor.id,
-      asignatura_id: asignaturaId
+      asignatura_id: asignaturaId,
     }));
 
     const { error: relacionError } = await supabase
@@ -95,16 +90,13 @@ export const createProfesor = async (req, res) => {
 
     if (relacionError) {
       // Rollback: eliminar el profesor creado
-      await supabase
-        .from('usuario')
-        .delete()
-        .eq('id', newProfesor.id);
+      await supabase.from('usuario').delete().eq('id', newProfesor.id);
 
       console.error('Error al asignar asignaturas:', relacionError);
       return res.status(500).json({
         success: false,
         message: 'Error al asignar asignaturas al profesor',
-        error: relacionError.message
+        error: relacionError.message,
       });
     }
 
@@ -115,18 +107,16 @@ export const createProfesor = async (req, res) => {
         to: email,
         subject: 'Bienvenido a Academia Parchada - Credenciales de Profesor',
         html: `
-          <h1>¡Bienvenido ${nombre} ${apellido}!</h1>
-          <p>Has sido registrado como <strong>Profesor</strong> en Academia Parchada.</p>
-          <p>Tus credenciales de acceso son:</p>
-          <ul>
-            <li><strong>Email:</strong> ${email}</li>
-            <li><strong>Contraseña temporal:</strong> ${tempPassword}</li>
-          </ul>
-          <p><strong>Importante:</strong> Por seguridad, te recomendamos cambiar tu contraseña después de iniciar sesión.</p>
-          <p>Puedes acceder a la plataforma en: <a href="${process.env.FRONTEND_URL}">${process.env.FRONTEND_URL}</a></p>
-          <br>
-          <p>¡Éxito en tus clases!</p>
-        `
+
+Has sido registrado como
+
+**Profesor** en Academia Parchada.
+
+Tus credenciales de acceso son:
+
+**Importante:** Por seguridad, te recomendamos cambiar tu contraseña después de iniciar sesión.
+
+Puedes acceder a la plataforma en: ${process.env.FRONTEND_URL}... ¡Éxito en tus clases!`,
       });
     } catch (emailError) {
       console.error('Error al enviar email:', emailError);
@@ -151,22 +141,17 @@ export const createProfesor = async (req, res) => {
           apellido: newProfesor.apellido,
           telefono: newProfesor.telefono,
           rol: newProfesor.rol,
-          asignaturas: asignaturasData
+          asignaturas: asignaturasData,
         },
         credenciales: {
           email: email,
-          password_temporal: tempPassword
-        }
-      }
+          password_temporal: tempPassword,
+        },
+      },
     });
-
   } catch (error) {
     console.error('Error en createProfesor:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error interno del servidor',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error interno del servidor', error: error.message });
   }
 };
 
@@ -184,7 +169,7 @@ export const listProfesores = async (req, res) => {
     // 1. Obtener profesores con paginación
     const { data: profesores, error: profesoresError, count } = await supabase
       .from('usuario')
-      .select('id, email, nombre, apellido, telefono, created_at', { count: 'exact' })
+      .select('id, email, nombre, apellido, telefono, timezone, created_at', { count: 'exact' })
       .eq('rol', 'profesor')
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
@@ -194,23 +179,25 @@ export const listProfesores = async (req, res) => {
       return res.status(500).json({
         success: false,
         message: 'Error al obtener profesores',
-        error: profesoresError.message
+        error: profesoresError.message,
       });
     }
 
     // 2. Obtener asignaturas de cada profesor
-    const profesoresIds = profesores.map(p => p.id);
+    const profesoresIds = profesores.map((p) => p.id);
 
     const { data: relaciones, error: relacionesError } = await supabase
       .from('profesor_asignatura')
-      .select(`
+      .select(
+        `
         profesor_id,
         asignatura:asignatura_id (
           id,
           nombre,
           descripcion
         )
-      `)
+      `
+      )
       .in('profesor_id', profesoresIds);
 
     if (relacionesError) {
@@ -218,16 +205,16 @@ export const listProfesores = async (req, res) => {
       return res.status(500).json({
         success: false,
         message: 'Error al obtener asignaturas de profesores',
-        error: relacionesError.message
+        error: relacionesError.message,
       });
     }
 
     // 3. Mapear asignaturas a cada profesor
-    const profesoresConAsignaturas = profesores.map(profesor => ({
+    const profesoresConAsignaturas = profesores.map((profesor) => ({
       ...profesor,
       asignaturas: relaciones
-        .filter(rel => rel.profesor_id === profesor.id)
-        .map(rel => rel.asignatura)
+        .filter((rel) => rel.profesor_id === profesor.id)
+        .map((rel) => rel.asignatura),
     }));
 
     // 4. Respuesta exitosa
@@ -239,18 +226,13 @@ export const listProfesores = async (req, res) => {
           page,
           limit,
           total: count,
-          totalPages: Math.ceil(count / limit)
-        }
-      }
+          totalPages: Math.ceil(count / limit),
+        },
+      },
     });
-
   } catch (error) {
     console.error('Error en listProfesores:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error interno del servidor',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error interno del servidor', error: error.message });
   }
 };
 
@@ -266,28 +248,27 @@ export const getProfesorById = async (req, res) => {
     // 1. Obtener profesor
     const { data: profesor, error: profesorError } = await supabase
       .from('usuario')
-      .select('id, email, nombre, apellido, telefono, rol, created_at')
+      .select('id, email, nombre, apellido, telefono, timezone, rol, created_at')
       .eq('id', id)
       .eq('rol', 'profesor')
       .single();
 
     if (profesorError || !profesor) {
-      return res.status(404).json({
-        success: false,
-        message: 'Profesor no encontrado'
-      });
+      return res.status(404).json({ success: false, message: 'Profesor no encontrado' });
     }
 
     // 2. Obtener asignaturas del profesor
     const { data: relaciones, error: relacionesError } = await supabase
       .from('profesor_asignatura')
-      .select(`
+      .select(
+        `
         asignatura:asignatura_id (
           id,
           nombre,
           descripcion
         )
-      `)
+      `
+      )
       .eq('profesor_id', id);
 
     if (relacionesError) {
@@ -295,7 +276,7 @@ export const getProfesorById = async (req, res) => {
       return res.status(500).json({
         success: false,
         message: 'Error al obtener asignaturas del profesor',
-        error: relacionesError.message
+        error: relacionesError.message,
       });
     }
 
@@ -305,18 +286,13 @@ export const getProfesorById = async (req, res) => {
       data: {
         profesor: {
           ...profesor,
-          asignaturas: relaciones.map(rel => rel.asignatura)
-        }
-      }
+          asignaturas: relaciones.map((rel) => rel.asignatura),
+        },
+      },
     });
-
   } catch (error) {
     console.error('Error en getProfesorById:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error interno del servidor',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error interno del servidor', error: error.message });
   }
 };
 
@@ -328,7 +304,7 @@ export const getProfesorById = async (req, res) => {
 export const updateProfesor = async (req, res) => {
   try {
     const { id } = req.params;
-    const { nombre, apellido, telefono, asignaturas } = req.body;
+    const { nombre, apellido, telefono, asignaturas, timezone } = req.body;
 
     // 1. Verificar que el profesor existe
     const { data: profesor, error: profesorError } = await supabase
@@ -339,10 +315,7 @@ export const updateProfesor = async (req, res) => {
       .single();
 
     if (profesorError || !profesor) {
-      return res.status(404).json({
-        success: false,
-        message: 'Profesor no encontrado'
-      });
+      return res.status(404).json({ success: false, message: 'Profesor no encontrado' });
     }
 
     // 2. Preparar datos para actualizar
@@ -350,20 +323,18 @@ export const updateProfesor = async (req, res) => {
     if (nombre !== undefined) updateData.nombre = nombre;
     if (apellido !== undefined) updateData.apellido = apellido;
     if (telefono !== undefined) updateData.telefono = telefono;
+    if (timezone !== undefined) updateData.timezone = timezone;
 
     // 3. Actualizar datos del profesor si hay cambios
     if (Object.keys(updateData).length > 0) {
-      const { error: updateError } = await supabase
-        .from('usuario')
-        .update(updateData)
-        .eq('id', id);
+      const { error: updateError } = await supabase.from('usuario').update(updateData).eq('id', id);
 
       if (updateError) {
         console.error('Error al actualizar profesor:', updateError);
         return res.status(500).json({
           success: false,
           message: 'Error al actualizar profesor',
-          error: updateError.message
+          error: updateError.message,
         });
       }
     }
@@ -377,43 +348,35 @@ export const updateProfesor = async (req, res) => {
         .in('id', asignaturas);
 
       if (asignaturasError || asignaturasExistentes.length !== asignaturas.length) {
-        return res.status(400).json({
-          success: false,
-          message: 'Una o más asignaturas no existen'
-        });
+        return res.status(400).json({ success: false, message: 'Una o más asignaturas no existen' });
       }
 
       // Eliminar relaciones antiguas
-      const { error: deleteError } = await supabase
-        .from('profesor_asignatura')
-        .delete()
-        .eq('profesor_id', id);
+      const { error: deleteError } = await supabase.from('profesor_asignatura').delete().eq('profesor_id', id);
 
       if (deleteError) {
         console.error('Error al eliminar asignaturas antiguas:', deleteError);
         return res.status(500).json({
           success: false,
           message: 'Error al actualizar asignaturas',
-          error: deleteError.message
+          error: deleteError.message,
         });
       }
 
       // Insertar nuevas relaciones
-      const asignaturasRelaciones = asignaturas.map(asignaturaId => ({
+      const asignaturasRelaciones = asignaturas.map((asignaturaId) => ({
         profesor_id: id,
-        asignatura_id: asignaturaId
+        asignatura_id: asignaturaId,
       }));
 
-      const { error: insertError } = await supabase
-        .from('profesor_asignatura')
-        .insert(asignaturasRelaciones);
+      const { error: insertError } = await supabase.from('profesor_asignatura').insert(asignaturasRelaciones);
 
       if (insertError) {
         console.error('Error al insertar nuevas asignaturas:', insertError);
         return res.status(500).json({
           success: false,
           message: 'Error al actualizar asignaturas',
-          error: insertError.message
+          error: insertError.message,
         });
       }
     }
@@ -427,13 +390,15 @@ export const updateProfesor = async (req, res) => {
 
     const { data: relaciones } = await supabase
       .from('profesor_asignatura')
-      .select(`
+      .select(
+        `
         asignatura:asignatura_id (
           id,
           nombre,
           descripcion
         )
-      `)
+      `
+      )
       .eq('profesor_id', id);
 
     // 6. Respuesta exitosa
@@ -443,18 +408,13 @@ export const updateProfesor = async (req, res) => {
       data: {
         profesor: {
           ...profesorActualizado,
-          asignaturas: relaciones.map(rel => rel.asignatura)
-        }
-      }
+          asignaturas: relaciones.map((rel) => rel.asignatura),
+        },
+      },
     });
-
   } catch (error) {
     console.error('Error en updateProfesor:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error interno del servidor',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error interno del servidor', error: error.message });
   }
 };
 
@@ -476,10 +436,7 @@ export const deleteProfesor = async (req, res) => {
       .single();
 
     if (profesorError || !profesor) {
-      return res.status(404).json({
-        success: false,
-        message: 'Profesor no encontrado'
-      });
+      return res.status(404).json({ success: false, message: 'Profesor no encontrado' });
     }
 
     // 2. Verificar que no tenga clases pendientes o programadas
@@ -495,7 +452,7 @@ export const deleteProfesor = async (req, res) => {
       return res.status(500).json({
         success: false,
         message: 'Error al verificar clases del profesor',
-        error: clasesError.message
+        error: clasesError.message,
       });
     }
 
@@ -504,8 +461,8 @@ export const deleteProfesor = async (req, res) => {
         success: false,
         message: `No se puede eliminar el profesor porque tiene ${clasesPendientes.length} clase(s) pendiente(s)`,
         data: {
-          clasesPendientes: clasesPendientes.length
-        }
+          clasesPendientes: clasesPendientes.length,
+        },
       });
     }
 
@@ -525,38 +482,30 @@ export const deleteProfesor = async (req, res) => {
         success: false,
         message: `No se puede eliminar el profesor porque tiene ${cursosActivos.length} curso(s) activo(s) asignado(s)`,
         data: {
-          cursosActivos: cursosActivos.length
-        }
+          cursosActivos: cursosActivos.length,
+        },
       });
     }
 
     // 4. Eliminar profesor (cascade eliminará las relaciones en profesor_asignatura)
-    const { error: deleteError } = await supabase
-      .from('usuario')
-      .delete()
-      .eq('id', id);
+    const { error: deleteError } = await supabase.from('usuario').delete().eq('id', id);
 
     if (deleteError) {
       console.error('Error al eliminar profesor:', deleteError);
       return res.status(500).json({
         success: false,
         message: 'Error al eliminar profesor',
-        error: deleteError.message
+        error: deleteError.message,
       });
     }
 
     // 5. Respuesta exitosa
     res.json({
       success: true,
-      message: `Profesor ${profesor.nombre} ${profesor.apellido} eliminado exitosamente`
+      message: `Profesor ${profesor.nombre} ${profesor.apellido} eliminado exitosamente`,
     });
-
   } catch (error) {
     console.error('Error en deleteProfesor:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error interno del servidor',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error interno del servidor', error: error.message });
   }
 };
