@@ -1,4 +1,5 @@
 // src/controllers/disponibilidadController.js
+
 import { supabase } from '../config/supabase.js';
 import { DateTime } from 'luxon';
 import { buscarFranjasConsecutivas } from '../utils/franjaHelpers.js';
@@ -51,6 +52,7 @@ export const obtenerFranjasDisponibles = async (req, res) => {
 
     // ===== Parse de fecha (día) en TZ del cliente =====
     const dtCliente = DateTime.fromISO(fecha, { zone: clienteTimeZone }).startOf('day');
+
     if (!dtCliente.isValid) {
       return res.status(400).json({
         success: false,
@@ -93,7 +95,6 @@ export const obtenerFranjasDisponibles = async (req, res) => {
     }
 
     const diasSemana = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
-
     const bloquesDisponibles = [];
 
     for (const pa of profesoresAsignatura) {
@@ -148,11 +149,21 @@ export const obtenerFranjasDisponibles = async (req, res) => {
           const inicioProfesor = dtProfesorBase.set({ hour: hh, minute: mm, second: ss });
           const finProfesor = inicioProfesor.plus({ hours: duracion });
 
+          // NUEVO: horas convertidas a la TZ del estudiante (cliente)
+          const inicioEstudiante = inicioProfesor.setZone(clienteTimeZone);
+          const finEstudiante = finProfesor.setZone(clienteTimeZone);
+
           bloquesDisponibles.push({
             hora_inicio: horaInicio,
             hora_fin: finProfesor.toFormat('HH:mm:ss'),
+
             fecha_hora_inicio_iso: inicioProfesor.toUTC().toISO(),
             fecha_hora_fin_iso: finProfesor.toUTC().toISO(),
+
+            // NUEVO: mismas franjas, pero en TZ del estudiante
+            inicio_estudiante: inicioEstudiante.toFormat('HH:mm:ss'),
+            fin_estudiante: finEstudiante.toFormat('HH:mm:ss'),
+
             duracion_horas: duracion,
             franja_horaria_ids: franjasConsecutivas,
             profesor: {
