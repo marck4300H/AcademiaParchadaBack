@@ -22,6 +22,7 @@ import seccionCursoRoutes from './routes/seccionCurso.routes.js';
 import cursoSesionesRoutes from './routes/cursoSesiones.routes.js';
 import documentosRoutes from './routes/documentos.routes.js';
 import disponibilidadRoutes from './routes/disponibilidad.routes.js'; 
+import categoriaRoutes from './routes/categoria.routes.js';
 
 
 
@@ -133,6 +134,7 @@ app.use('/api/cursos', seccionCursoRoutes);
 app.use('/api/cursos', cursoSesionesRoutes);
 app.use('/api/documentos', documentosRoutes);
 app.use('/api/disponibilidad', disponibilidadRoutes);
+app.use('/api/categorias', categoriaRoutes);
 
 
 
