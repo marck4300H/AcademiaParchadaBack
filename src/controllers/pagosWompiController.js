@@ -319,7 +319,11 @@ export const crearCheckoutWompi = async (req, res) => {
 
       const horas = Number(cantidad_horas);
       titulo = `Paquete de horas (${horas}h)`;
-      monto_total = Number(clase.precio) * horas;
+
+      // ✅ CAMBIO: aplicar 10% desde 2 horas
+      const subtotal = Number(clase.precio) * horas;
+      monto_total = horas >= 2 ? subtotal * 0.9 : subtotal;
+
       metadata = { ...metadata, clase_personalizada_id: clase.id, cantidad_horas: horas };
     } else {
       return res.status(400).json({ success: false, message: "tipo_compra inválido" });
@@ -403,6 +407,7 @@ export const crearCheckoutWompi = async (req, res) => {
     });
   }
 };
+
 
 export const webhookWompi = async (req, res) => {
   const requestId = crypto.randomUUID();
