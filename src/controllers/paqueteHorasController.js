@@ -8,6 +8,24 @@ import { asignarProfesorOptimo } from '../utils/asignarProfesor.js';
 import { notifyProfesorAfterPaqueteHorasSessionCreated } from '../services/emailService.js';
 
 /**
+ * Descuento paquete horas:
+ * - 1 hora: 0%
+ * - >= 2 horas: 10% fijo sobre el total
+ *
+ * Nota: el "tope 60%" no se alcanza con 10% fijo, pero lo dejamos listo por si luego cambias reglas.
+ */
+const DESCUENTO_FIJO = 0.10;
+const DESCUENTO_MIN_HORAS = 2;
+const DESCUENTO_MAX = 0.60;
+
+const calcDescuentoPct = (horas) => {
+  if (!Number.isFinite(horas) || horas <= 0) return 0;
+  const pct = horas >= DESCUENTO_MIN_HORAS ? DESCUENTO_FIJO : 0;
+  return Math.min(pct, DESCUENTO_MAX);
+};
+
+
+/**
  * CU-032: Comprar Paquete de Horas
  * Permite comprar un paquete de N horas para agendar después
  */
@@ -37,9 +55,29 @@ export const comprarPaqueteHoras = async (req, res) => {
       });
     }
 
-    // 2. Calcular precio total (precio por hora × cantidad)
+    // 2. Calcular precio total (precio por hora × cantidad) + descuento
     const horas = Number(cantidad_horas);
-    const monto_total = Number(clase.precio) * horas;
+
+    if (!Number.isFinite(horas) || horas <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'cantidad_horas debe ser un número mayor a 0'
+      });
+    }
+
+    // (Opcional) si deseas forzar enteros:
+    // if (!Number.isInteger(horas)) {
+    //   return res.status(400).json({
+    //     success: false,
+    //     message: 'cantidad_horas debe ser un entero'
+    //   });
+    // }
+
+    const precioPorHora = Number(clase.precio);
+    const subtotal = precioPorHora * horas;
+
+    const descuento_pct = calcDescuentoPct(horas);
+    const monto_total = Math.max(0, subtotal * (1 - descuento_pct));
 
     // 3. Determinar estudiante (autenticado o nuevo)
     let estudiante_id;
@@ -147,6 +185,11 @@ export const comprarPaqueteHoras = async (req, res) => {
           asignatura: clase.asignatura,
           precio_por_hora: clase.precio
         },
+        pricing: {
+          subtotal,
+          descuento_pct,
+          total: monto_total
+        },
         instrucciones: `Usa POST /api/paquetes-horas/${compra.id}/agendar para agendar tus sesiones`
       }
     });
@@ -160,6 +203,7 @@ export const comprarPaqueteHoras = async (req, res) => {
   }
 };
 
+
 /**
  * CU-033: Agendar Sesión de Paquete
  * Permite agendar una sesión usando horas del paquete
@@ -169,9 +213,9 @@ export const comprarPaqueteHoras = async (req, res) => {
 export const agendarSesion = async (req, res) => {
   try {
     const { compra_id } = req.params;
-    const { 
-      fecha_hora, 
-      duracion_horas, 
+    const {
+      fecha_hora,
+      duracion_horas,
       descripcion_estudiante,
       documento_url  // ← NUEVO: URL del documento previamente subido
     } = req.body;
@@ -375,6 +419,7 @@ export const agendarSesion = async (req, res) => {
   }
 };
 
+
 /**
  * Obtener detalles de un paquete de horas
  */
@@ -456,6 +501,7 @@ export const obtenerPaquete = async (req, res) => {
     });
   }
 };
+
 
 /**
  * Listar sesiones de un paquete
