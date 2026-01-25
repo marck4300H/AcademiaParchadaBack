@@ -302,7 +302,10 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
       const horas = Number(cantidad_horas);
       titulo = `Paquete de horas (${horas}h)`;
-      monto_total = Number(clase.precio) * horas;
+
+      // ✅ CAMBIO: aplicar 10% desde 2 horas
+      const subtotal = Number(clase.precio) * horas;
+      monto_total = horas >= 2 ? subtotal * 0.9 : subtotal;
 
       metadata = { ...metadata, clase_personalizada_id: clase.id, cantidad_horas: horas };
     } else {
@@ -410,6 +413,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
     });
   }
 };
+
 
 export const webhookMercadoPago = async (req, res) => {
   try {
