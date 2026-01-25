@@ -1,19 +1,21 @@
 // src/controllers/clasePersonalizadaController.js
 
 import { supabase } from '../config/supabase.js';
+import { uploadToSupabaseBucket, buildImagePath, safeName } from '../services/storageService.js';
 
 /**
  * CU-017: Crear Plantilla de Clase Personalizada
  * POST /api/clases-personalizadas
  * Rol: Administrador
+ *
+ * NUEVO:
+ * - categoria_id (opcional pero recomendado)
  */
-// Dentro de src/controllers/clasePersonalizadaController.js
-import { uploadToSupabaseBucket, buildImagePath, safeName } from '../services/storageService.js';
-
 export const createClasePersonalizada = async (req, res) => {
   try {
     const {
       asignatura_id,
+      categoria_id, // ✅ nuevo
       precio,
       duracion_horas,
       tipo_pago_profesor,
@@ -29,7 +31,10 @@ export const createClasePersonalizada = async (req, res) => {
     }
 
     if (!['porcentaje', 'monto_fijo'].includes(tipo_pago_profesor)) {
-      return res.status(400).json({ success: false, message: 'El tipo de pago profesor debe ser "porcentaje" o "monto_fijo"' });
+      return res.status(400).json({
+        success: false,
+        message: 'El tipo de pago profesor debe ser "porcentaje" o "monto_fijo"'
+      });
     }
 
     if (tipo_pago_profesor === 'porcentaje') {
@@ -53,17 +58,43 @@ export const createClasePersonalizada = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Asignatura no encontrada' });
     }
 
+    // ✅ validar categoria si viene
+    if (categoria_id) {
+      const { data: categoria, error: categoriaError } = await supabase
+        .from('categoria')
+        .select('id, nombre')
+        .eq('id', categoria_id)
+        .single();
+
+      if (categoriaError || !categoria) {
+        return res.status(404).json({ success: false, message: 'Categoría no encontrada' });
+      }
+    }
+
     // 1) crear clase
     const { data: clasePersonalizada, error } = await supabase
       .from('clase_personalizada')
       .insert([{
         asignatura_id,
+        categoria_id: categoria_id || null, // ✅ nuevo
         precio: Number(precio),
         duracion_horas: Number(duracion_horas),
         tipo_pago_profesor,
         valor_pago_profesor: Number(valor_pago_profesor)
       }])
-      .select('*')
+      .select(`
+        *,
+        asignatura:asignatura_id (
+          id,
+          nombre,
+          descripcion
+        ),
+        categoria:categoria_id (
+          id,
+          nombre,
+          descripcion
+        )
+      `)
       .single();
 
     if (error) throw error;
@@ -96,7 +127,19 @@ export const createClasePersonalizada = async (req, res) => {
           updated_at: new Date().toISOString()
         })
         .eq('id', clasePersonalizada.id)
-        .select('*')
+        .select(`
+          *,
+          asignatura:asignatura_id (
+            id,
+            nombre,
+            descripcion
+          ),
+          categoria:categoria_id (
+            id,
+            nombre,
+            descripcion
+          )
+        `)
         .single();
 
       if (upErr) throw upErr;
@@ -123,18 +166,20 @@ export const createClasePersonalizada = async (req, res) => {
   }
 };
 
-
 /**
  * CU-018: Listar Clases Personalizadas
  * GET /api/clases-personalizadas
  * Rol: Administrador, Estudiante
+ *
+ * Query:
+ * - asignatura_id (opcional)
+ * - categoria_id (opcional) ✅ nuevo
  */
 export const listClasesPersonalizadas = async (req, res) => {
   try {
-    const { page = 1, limit = 10, asignatura_id } = req.query;
-    const offset = (page - 1) * limit;
+    const { page = 1, limit = 10, asignatura_id, categoria_id } = req.query;
+    const offset = (Number(page) - 1) * Number(limit);
 
-    // Construir query base
     let query = supabase
       .from('clase_personalizada')
       .select(`
@@ -143,16 +188,18 @@ export const listClasesPersonalizadas = async (req, res) => {
           id,
           nombre,
           descripcion
+        ),
+        categoria:categoria_id (
+          id,
+          nombre,
+          descripcion
         )
       `, { count: 'exact' })
       .order('created_at', { ascending: false });
 
-    // Filtrar por asignatura si se proporciona
-    if (asignatura_id) {
-      query = query.eq('asignatura_id', asignatura_id);
-    }
+    if (asignatura_id) query = query.eq('asignatura_id', asignatura_id);
+    if (categoria_id) query = query.eq('categoria_id', categoria_id);
 
-    // Paginación
     query = query.range(offset, offset + parseInt(limit) - 1);
 
     const { data: clasesPersonalizadas, error, count } = await query;
@@ -162,7 +209,7 @@ export const listClasesPersonalizadas = async (req, res) => {
       throw error;
     }
 
-    res.json({
+    return res.json({
       success: true,
       data: {
         clases_personalizadas: clasesPersonalizadas || [],
@@ -174,10 +221,9 @@ export const listClasesPersonalizadas = async (req, res) => {
         }
       }
     });
-
   } catch (error) {
     console.error('Error en listClasesPersonalizadas:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
       error: error.message
@@ -202,6 +248,11 @@ export const getClasePersonalizadaById = async (req, res) => {
           id,
           nombre,
           descripcion
+        ),
+        categoria:categoria_id (
+          id,
+          nombre,
+          descripcion
         )
       `)
       .eq('id', id)
@@ -214,16 +265,15 @@ export const getClasePersonalizadaById = async (req, res) => {
       });
     }
 
-    res.json({
+    return res.json({
       success: true,
       data: {
         clase_personalizada: clasePersonalizada
       }
     });
-
   } catch (error) {
     console.error('Error en getClasePersonalizadaById:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
       error: error.message
@@ -235,19 +285,22 @@ export const getClasePersonalizadaById = async (req, res) => {
  * CU-019: Editar Clase Personalizada
  * PUT /api/clases-personalizadas/:id
  * Rol: Administrador
+ *
+ * NUEVO:
+ * - categoria_id
  */
 export const updateClasePersonalizada = async (req, res) => {
   try {
     const { id } = req.params;
     const {
       asignatura_id,
+      categoria_id, // ✅ nuevo
       precio,
       duracion_horas,
       tipo_pago_profesor,
       valor_pago_profesor
     } = req.body;
 
-    // Verificar que la clase personalizada existe
     const { data: claseExistente, error: claseError } = await supabase
       .from('clase_personalizada')
       .select('*')
@@ -261,11 +314,9 @@ export const updateClasePersonalizada = async (req, res) => {
       });
     }
 
-    // Construir objeto de actualización (solo campos proporcionados)
     const updateData = {};
 
     if (asignatura_id !== undefined) {
-      // Verificar que la asignatura existe
       const { data: asignatura, error: asignaturaError } = await supabase
         .from('asignatura')
         .select('id')
@@ -281,24 +332,40 @@ export const updateClasePersonalizada = async (req, res) => {
       updateData.asignatura_id = asignatura_id;
     }
 
-    if (precio !== undefined) {
-      if (precio <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'El precio debe ser mayor a 0'
-        });
+    // ✅ categoria: permitir setear null con "" o null
+    if (categoria_id !== undefined) {
+      const normalized = (categoria_id === '' || categoria_id === null) ? null : categoria_id;
+
+      if (normalized) {
+        const { data: categoria, error: categoriaError } = await supabase
+          .from('categoria')
+          .select('id')
+          .eq('id', normalized)
+          .single();
+
+        if (categoriaError || !categoria) {
+          return res.status(404).json({
+            success: false,
+            message: 'Categoría no encontrada'
+          });
+        }
       }
-      updateData.precio = precio;
+
+      updateData.categoria_id = normalized;
+    }
+
+    if (precio !== undefined) {
+      if (Number(precio) <= 0) {
+        return res.status(400).json({ success: false, message: 'El precio debe ser mayor a 0' });
+      }
+      updateData.precio = Number(precio);
     }
 
     if (duracion_horas !== undefined) {
-      if (duracion_horas <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'La duración debe ser mayor a 0'
-        });
+      if (Number(duracion_horas) <= 0) {
+        return res.status(400).json({ success: false, message: 'La duración debe ser mayor a 0' });
       }
-      updateData.duracion_horas = duracion_horas;
+      updateData.duracion_horas = Number(duracion_horas);
     }
 
     if (tipo_pago_profesor !== undefined) {
@@ -312,28 +379,20 @@ export const updateClasePersonalizada = async (req, res) => {
     }
 
     if (valor_pago_profesor !== undefined) {
-      // Validar según tipo de pago
       const tipoActual = updateData.tipo_pago_profesor || claseExistente.tipo_pago_profesor;
 
       if (tipoActual === 'porcentaje') {
-        if (valor_pago_profesor < 0 || valor_pago_profesor > 100) {
-          return res.status(400).json({
-            success: false,
-            message: 'El porcentaje debe estar entre 0 y 100'
-          });
+        if (Number(valor_pago_profesor) < 0 || Number(valor_pago_profesor) > 100) {
+          return res.status(400).json({ success: false, message: 'El porcentaje debe estar entre 0 y 100' });
         }
       } else {
-        if (valor_pago_profesor < 0) {
-          return res.status(400).json({
-            success: false,
-            message: 'El monto fijo debe ser mayor o igual a 0'
-          });
+        if (Number(valor_pago_profesor) < 0) {
+          return res.status(400).json({ success: false, message: 'El monto fijo debe ser mayor o igual a 0' });
         }
       }
-      updateData.valor_pago_profesor = valor_pago_profesor;
+      updateData.valor_pago_profesor = Number(valor_pago_profesor);
     }
 
-    // Si no hay campos para actualizar
     if (Object.keys(updateData).length === 0) {
       return res.status(400).json({
         success: false,
@@ -343,7 +402,6 @@ export const updateClasePersonalizada = async (req, res) => {
 
     updateData.updated_at = new Date().toISOString();
 
-    // Actualizar clase personalizada
     const { data: claseActualizada, error } = await supabase
       .from('clase_personalizada')
       .update(updateData)
@@ -351,6 +409,11 @@ export const updateClasePersonalizada = async (req, res) => {
       .select(`
         *,
         asignatura:asignatura_id (
+          id,
+          nombre,
+          descripcion
+        ),
+        categoria:categoria_id (
           id,
           nombre,
           descripcion
@@ -363,17 +426,16 @@ export const updateClasePersonalizada = async (req, res) => {
       throw error;
     }
 
-    res.json({
+    return res.json({
       success: true,
       message: 'Clase personalizada actualizada exitosamente',
       data: {
         clase_personalizada: claseActualizada
       }
     });
-
   } catch (error) {
     console.error('Error en updateClasePersonalizada:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
       error: error.message
@@ -390,7 +452,6 @@ export const deleteClasePersonalizada = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Verificar que la clase personalizada existe
     const { data: claseExistente, error: claseError } = await supabase
       .from('clase_personalizada')
       .select('id')
@@ -404,7 +465,6 @@ export const deleteClasePersonalizada = async (req, res) => {
       });
     }
 
-    // Verificar que no tenga compras asociadas
     const { data: compras, error: comprasError } = await supabase
       .from('compra')
       .select('id')
@@ -423,7 +483,6 @@ export const deleteClasePersonalizada = async (req, res) => {
       });
     }
 
-    // Eliminar clase personalizada
     const { error } = await supabase
       .from('clase_personalizada')
       .delete()
@@ -434,14 +493,13 @@ export const deleteClasePersonalizada = async (req, res) => {
       throw error;
     }
 
-    res.json({
+    return res.json({
       success: true,
       message: 'Clase personalizada eliminada exitosamente'
     });
-
   } catch (error) {
     console.error('Error en deleteClasePersonalizada:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
       error: error.message
