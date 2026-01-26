@@ -240,6 +240,22 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         return res.status(400).json({ success: false, message: 'fecha_hora es requerida para clase_personalizada' });
       }
 
+      // ✅ NUEVO: bloquear si intentan agendar para el mismo día (mínimo 24h desde ahora)
+      const fechaClase = new Date(fecha_hora);
+      if (Number.isNaN(fechaClase.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: 'fecha_hora inválida. Debe venir en formato ISO con zona horaria (ej: 2026-01-28T13:00:00.000Z).'
+        });
+      }
+      const minMs = Date.now() + 24 * 60 * 60 * 1000;
+      if (fechaClase.getTime() < minMs) {
+        return res.status(400).json({
+          success: false,
+          message: 'Las clases personalizadas deben agendarse mínimo para el día siguiente.'
+        });
+      }
+
       const { data: clase, error } = await supabase
         .from('clase_personalizada')
         .select('id,precio,duracion_horas,asignatura_id, asignatura:asignatura_id (id,nombre)')
