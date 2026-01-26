@@ -184,7 +184,7 @@ export const login = async (req, res) => {
  */
 export const loginGoogle = async (req, res) => {
   try {
-    const { access_token } = req.body;
+    const { access_token, timezone } = req.body;
 
     if (!access_token) {
       return res.status(400).json({
@@ -193,8 +193,13 @@ export const loginGoogle = async (req, res) => {
       });
     }
 
+    // normaliza timezone (evita \r\n y valores raros)
+    const tz =
+      String(timezone || '')
+        .trim()
+        .replace(/\s+/g, '') || null;
+
     // 1) Validar token con Supabase y obtener perfil
-    // Nota: el cliente Supabase en backend usa SERVICE_ROLE_KEY, por eso puede consultar auth.
     const { data, error } = await supabase.auth.getUser(access_token);
 
     if (error || !data?.user) {
@@ -216,7 +221,6 @@ export const loginGoogle = async (req, res) => {
 
     const meta = sbUser.user_metadata || {};
     const fullName = meta.full_name || meta.name || meta.nombre || '';
-
     const { nombre, apellido } = splitNombreApellido(fullName);
 
     // 2) Buscar usuario local
@@ -240,7 +244,7 @@ export const loginGoogle = async (req, res) => {
           nombre,
           apellido,
           telefono: null,
-          timezone: 'America/Bogota',
+          timezone: tz || 'America/Bogota',
           rol: 'estudiante'
         }])
         .select('*')
@@ -259,6 +263,19 @@ export const loginGoogle = async (req, res) => {
 
       // Email bienvenida (no bloquea)
       await sendWelcomeEmail({ to: user.email, nombre: user.nombre });
+    } else {
+      // ✅ NUEVO: si ya existe y viene timezone, actualizarla
+      if (tz && tz !== user.timezone) {
+        const { data: updated, error: upErr } = await supabase
+          .from('usuario')
+          .update({ timezone: tz })
+          .eq('id', user.id)
+          .select('*')
+          .single();
+
+        if (upErr) throw upErr;
+        user = updated;
+      }
     }
 
     // 4) Forzar que solo sea estudiante
@@ -301,6 +318,7 @@ export const loginGoogle = async (req, res) => {
     });
   }
 };
+
 
 /**
  * CU-004: Cierre de Sesión
