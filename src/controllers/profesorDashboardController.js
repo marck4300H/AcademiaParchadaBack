@@ -1,5 +1,8 @@
 // src/controllers/profesorDashboardController.js
 import { supabase } from '../config/supabase.js';
+import { DateTime } from 'luxon';
+
+const DEFAULT_TZ = 'America/Bogota';
 
 /**
  * CU-040: Ver Mis Clases Asignadas (Profesor)
@@ -15,6 +18,19 @@ export const getMisClasesProfesor = async (req, res) => {
     const page = parseInt(req.query.page || '1', 10);
     const limit = parseInt(req.query.limit || '10', 10);
     const offset = (page - 1) * limit;
+
+    // ✅ 0) Obtener timezone del profesor desde BD (y validarla)
+    const { data: prof, error: profErr } = await supabase
+      .from('usuario')
+      .select('timezone')
+      .eq('id', profesorId)
+      .single();
+
+    if (profErr) throw profErr;
+
+    const tzCandidate = String(prof?.timezone || '').trim() || DEFAULT_TZ;
+    const tzIsValid = DateTime.now().setZone(tzCandidate).isValid;
+    const profesorTimeZone = tzIsValid ? tzCandidate : DEFAULT_TZ;
 
     // 1) Traer sesiones asignadas al profesor + compra
     const { data: sesiones, error } = await supabase
@@ -54,12 +70,26 @@ export const getMisClasesProfesor = async (req, res) => {
 
     const sesionesFiltradas = (sesiones || []).filter(s => s?.compra);
 
+    // ✅ 1.1) Convertir fecha_hora a la timezone del profesor (manteniendo misma key)
+    const sesionesConHoraLocal = sesionesFiltradas.map(s => {
+      const raw = s?.fecha_hora;
+      if (!raw) return s;
+
+      const dt = DateTime.fromISO(String(raw), { setZone: true });
+      if (!dt.isValid) return s;
+
+      return {
+        ...s,
+        fecha_hora: dt.setZone(profesorTimeZone).toISO()
+      };
+    });
+
     // 2) Enriquecer: estudiante (usuario) + clase_personalizada + asignatura
     const estudianteIds = [
-      ...new Set(sesionesFiltradas.map(s => s.compra?.estudiante_id).filter(Boolean))
+      ...new Set(sesionesConHoraLocal.map(s => s.compra?.estudiante_id).filter(Boolean))
     ];
     const claseIds = [
-      ...new Set(sesionesFiltradas.map(s => s.compra?.clase_personalizada_id).filter(Boolean))
+      ...new Set(sesionesConHoraLocal.map(s => s.compra?.clase_personalizada_id).filter(Boolean))
     ];
 
     // Estudiantes
@@ -98,7 +128,7 @@ export const getMisClasesProfesor = async (req, res) => {
       claseMap = new Map((clases || []).map(c => [c.id, c]));
     }
 
-    const payload = sesionesFiltradas.map(s => {
+    const payload = sesionesConHoraLocal.map(s => {
       const estudiante = s?.compra?.estudiante_id
         ? (estudianteMap.get(s.compra.estudiante_id) || null)
         : null;
@@ -134,6 +164,7 @@ export const getMisClasesProfesor = async (req, res) => {
     });
   }
 };
+
 
 /**
  * CU-041: Ver Mis Cursos Asignados (Profesor)

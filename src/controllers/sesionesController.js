@@ -2,9 +2,26 @@
 import { supabase } from '../config/supabase.js';
 import { sendMeetLinkEmails } from '../services/emailService.js';
 
+import { DateTime } from 'luxon';
+
+const DEFAULT_TZ = 'America/Bogota';
+
 export const listarSesionesPendientesLink = async (req, res) => {
   try {
     const isProfesor = req.user?.rol === 'profesor';
+
+    // 0) Obtener timezone del usuario autenticado (profesor/admin) y validarla
+    const { data: u, error: uErr } = await supabase
+      .from('usuario')
+      .select('timezone')
+      .eq('id', req.user.id)
+      .single();
+
+    if (uErr) throw uErr;
+
+    const tzCandidate = String(u?.timezone || '').trim() || DEFAULT_TZ;
+    const tzIsValid = DateTime.now().setZone(tzCandidate).isValid;
+    const userTimeZone = tzIsValid ? tzCandidate : DEFAULT_TZ;
 
     let query = supabase
       .from('sesion_clase')
@@ -56,11 +73,24 @@ export const listarSesionesPendientesLink = async (req, res) => {
       });
     }
 
-    return res.status(200).json({
-      success: true,
-      data: { sesiones: data || [] }
+    // 1) Convertir fecha_hora a la timezone del usuario que hace la request
+    const sesionesConvertidas = (data || []).map((s) => {
+      const raw = s?.fecha_hora;
+      if (!raw) return s;
+
+      const dt = DateTime.fromISO(String(raw), { setZone: true });
+      if (!dt.isValid) return s;
+
+      return {
+        ...s,
+        fecha_hora: dt.setZone(userTimeZone).toISO()
+      };
     });
 
+    return res.status(200).json({
+      success: true,
+      data: { sesiones: sesionesConvertidas }
+    });
   } catch (error) {
     console.error('❌ Error listarSesionesPendientesLink:', error);
     return res.status(500).json({
