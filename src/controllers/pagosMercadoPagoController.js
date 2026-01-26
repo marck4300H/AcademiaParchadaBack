@@ -240,7 +240,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         return res.status(400).json({ success: false, message: 'fecha_hora es requerida para clase_personalizada' });
       }
 
-      // ✅ NUEVO: bloquear si intentan agendar para el mismo día (mínimo 24h desde ahora)
+      // ✅ FIX: bloquear solo si intentan agendar para HOY (día calendario), no "24h desde ahora"
       const fechaClase = new Date(fecha_hora);
       if (Number.isNaN(fechaClase.getTime())) {
         return res.status(400).json({
@@ -248,11 +248,15 @@ export const crearCheckoutMercadoPago = async (req, res) => {
           message: 'fecha_hora inválida. Debe venir en formato ISO con zona horaria (ej: 2026-01-28T13:00:00.000Z).'
         });
       }
-      const minMs = Date.now() + 24 * 60 * 60 * 1000;
-      if (fechaClase.getTime() < minMs) {
+
+      // Comparación por día calendario en UTC (coherente si fecha_hora viene como ISO con "Z")
+      const ymdUTC = (d) => `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+      const hoyUTC = ymdUTC(new Date());
+
+      if (ymdUTC(fechaClase) === hoyUTC) {
         return res.status(400).json({
           success: false,
-          message: 'Las clases personalizadas deben agendarse mínimo para el día siguiente.'
+          message: 'No puedes agendar una clase para hoy. Elige desde mañana en adelante.'
         });
       }
 
