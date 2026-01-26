@@ -1,5 +1,8 @@
 // src/controllers/estudianteController.js
 import { supabase } from '../config/supabase.js';
+import { DateTime } from 'luxon';
+
+const DEFAULT_TZ = 'America/Bogota';
 
 /**
  * CU-034: Ver Mis Cursos Comprados (Backend)
@@ -121,7 +124,20 @@ export const getMisClases = async (req, res) => {
     const limit = parseInt(req.query.limit || '10', 10);
     const offset = (page - 1) * limit;
 
-    // Traer sesiones del estudiante (via compra)
+    // ✅ 0) Obtener timezone del estudiante desde BD (y validarla)
+    const { data: est, error: estErr } = await supabase
+      .from('usuario')
+      .select('timezone')
+      .eq('id', estudianteId)
+      .single();
+
+    if (estErr) throw estErr;
+
+    const tzCandidate = est?.timezone || DEFAULT_TZ;
+    const tzIsValid = DateTime.now().setZone(tzCandidate).isValid;
+    const estudianteTimeZone = tzIsValid ? tzCandidate : DEFAULT_TZ;
+
+    // 1) Traer sesiones del estudiante (via compra)
     const { data: sesiones, error } = await supabase
       .from('sesion_clase')
       .select(
@@ -168,16 +184,32 @@ export const getMisClases = async (req, res) => {
 
     if (error) throw error;
 
-    // Filtrar por estudiante y pago completado en backend (por seguridad)
-    const sesionesFiltradas = (sesiones || []).filter(s =>
-      s?.compra?.estudiante_id === estudianteId &&
-      s?.compra?.estado_pago === 'completado'
+    // 2) Filtrar por estudiante y pago completado en backend (por seguridad)
+    const sesionesFiltradas = (sesiones || []).filter(
+      s => s?.compra?.estudiante_id === estudianteId && s?.compra?.estado_pago === 'completado'
     );
 
-    // Enriquecer con clase_personalizada + asignatura
+    // ✅ 2.1) Convertir fecha_hora a timezone del estudiante (manteniendo misma key)
+    const sesionesConHoraLocal = sesionesFiltradas.map(s => {
+      const raw = s?.fecha_hora;
+
+      if (!raw) return s;
+
+      // raw viene como timestamptz (string con offset/Z en general)
+      const dt = DateTime.fromISO(String(raw), { setZone: true });
+      if (!dt.isValid) return s;
+
+      return {
+        ...s,
+        // Misma propiedad, solo valor convertido (ISO con offset de estudianteTimeZone)
+        fecha_hora: dt.setZone(estudianteTimeZone).toISO()
+      };
+    });
+
+    // 3) Enriquecer con clase_personalizada + asignatura
     const claseIds = [
       ...new Set(
-        sesionesFiltradas
+        sesionesConHoraLocal
           .map(s => s?.compra?.clase_personalizada_id)
           .filter(Boolean)
       )
@@ -207,7 +239,7 @@ export const getMisClases = async (req, res) => {
       claseMap = new Map((clases || []).map(c => [c.id, c]));
     }
 
-    const payload = sesionesFiltradas.map(s => ({
+    const payload = sesionesConHoraLocal.map(s => ({
       ...s,
       clase_personalizada: s?.compra?.clase_personalizada_id
         ? (claseMap.get(s.compra.clase_personalizada_id) || null)
