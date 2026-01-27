@@ -307,6 +307,19 @@ export const agendarSesion = async (req, res) => {
       });
     }
 
+    // ✅ VALIDACIÓN CORRECTA: no permitir agendar para "hoy".
+    // Debe ser desde "mañana" en adelante, según el timezone del estudiante.
+    const nowEstudiante = DateTime.now().setZone(estudianteTimeZone);
+    const inicioHoy = nowEstudiante.startOf('day');
+    const inicioManana = inicioHoy.plus({ days: 1 }); // mañana 00:00 en timezone del estudiante
+
+    if (dtEstudiante < inicioManana) {
+      return res.status(400).json({
+        success: false,
+        message: 'No puedes agendar sesiones para el mismo día. Solo puedes agendar desde el día siguiente en adelante.'
+      });
+    }
+
     // Esto es lo que se guarda en timestamp with time zone (instant real, en UTC)
     const fechaHoraToStore = dtEstudiante.toUTC().toISO();
 
