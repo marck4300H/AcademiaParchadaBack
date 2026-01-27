@@ -110,7 +110,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
     } = req.body;
 
     if (!tipo_compra) {
-      return res.status(400).json({ success: false, message: 'tipo_compra es requerido' });
+      return res.status(400).json({ success: false, message: "tipo_compra es requerido" });
     }
 
     // 1) Resolver estudiante_id
@@ -119,9 +119,9 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
     if (estudiante_id) {
       const { data: estDB } = await supabase
-        .from('usuario')
-        .select('timezone')
-        .eq('id', estudiante_id)
+        .from("usuario")
+        .select("timezone")
+        .eq("id", estudiante_id)
         .single();
 
       estudianteTZFromDB = estDB?.timezone || null;
@@ -131,22 +131,22 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       if (!estudiante?.email || !estudiante?.password || !estudiante?.nombre || !estudiante?.apellido) {
         return res.status(400).json({
           success: false,
-          message: 'Si no hay token, debes enviar estudiante {email, password, nombre, apellido}.'
+          message: "Si no hay token, debes enviar estudiante {email, password, nombre, apellido}."
         });
       }
 
       const { email, password, nombre, apellido, telefono, timezone } = estudiante;
 
       const { data: existente } = await supabase
-        .from('usuario')
-        .select('id')
-        .eq('email', email)
+        .from("usuario")
+        .select("id")
+        .eq("email", email)
         .maybeSingle();
 
       if (existente?.id) {
         return res.status(400).json({
           success: false,
-          message: 'El email ya está registrado. Inicia sesión para pagar.'
+          message: "El email ya está registrado. Inicia sesión para pagar."
         });
       }
 
@@ -154,7 +154,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       const passwordHash = await bcrypt.hash(password, salt);
 
       const { data: nuevoEst, error: errNuevo } = await supabase
-        .from('usuario')
+        .from("usuario")
         .insert([{
           email,
           nombre,
@@ -162,7 +162,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
           telefono: telefono || null,
           timezone: timezone || null,
           password_hash: passwordHash,
-          rol: 'estudiante'
+          rol: "estudiante"
         }])
         .select()
         .single();
@@ -175,32 +175,44 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
     const estudianteTimeZone = estudiante_timezone || estudianteTZFromDB || null;
 
+    // helper: YYYY-MM-DD en una timezone IANA, usando Intl (sin librerías)
+    const ymdInTimeZone = (date, timeZone) => {
+      const fmt = new Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+      // en-CA => "YYYY-MM-DD"
+      return fmt.format(date);
+    };
+
     // 2) Calcular monto_total y metadata
-    let titulo = '';
+    let titulo = "";
     let monto_total = 0;
     let metadata = { tipo_compra };
 
-    if (tipo_compra === 'curso') {
+    if (tipo_compra === "curso") {
       if (!curso_id) {
-        return res.status(400).json({ success: false, message: 'curso_id es requerido' });
+        return res.status(400).json({ success: false, message: "curso_id es requerido" });
       }
 
       const { data: curso, error } = await supabase
-        .from('curso')
-        .select('id,nombre,precio,profesor_id,capacidad_maxima')
-        .eq('id', curso_id)
+        .from("curso")
+        .select("id,nombre,precio,profesor_id,capacidad_maxima")
+        .eq("id", curso_id)
         .single();
 
       if (error || !curso) {
-        return res.status(404).json({ success: false, message: 'Curso no encontrado' });
+        return res.status(404).json({ success: false, message: "Curso no encontrado" });
       }
 
-      // ✅ NUEVO: bloquear si ya está inscrito
+      // bloquear si ya está inscrito
       const { data: inscExist, error: inscErr } = await supabase
-        .from('inscripcion_curso')
-        .select('id')
-        .eq('estudiante_id', estudiante_id)
-        .eq('curso_id', curso.id)
+        .from("inscripcion_curso")
+        .select("id")
+        .eq("estudiante_id", estudiante_id)
+        .eq("curso_id", curso.id)
         .maybeSingle();
 
       if (inscErr) throw inscErr;
@@ -208,66 +220,68 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       if (inscExist?.id) {
         return res.status(400).json({
           success: false,
-          message: 'Ya estás inscrito en este curso. No puedes comprarlo nuevamente.'
+          message: "Ya estás inscrito en este curso. No puedes comprarlo nuevamente."
         });
       }
 
-      // ✅ NUEVO: validar cupo
+      // validar cupo
       const capMax = Number(curso.capacidad_maxima ?? 25);
       const { count: inscritosCount, error: countErr } = await supabase
-        .from('inscripcion_curso')
-        .select('id', { count: 'exact', head: true })
-        .eq('curso_id', curso.id);
+        .from("inscripcion_curso")
+        .select("id", { count: "exact", head: true })
+        .eq("curso_id", curso.id);
 
       if (countErr) throw countErr;
 
       if (Number.isFinite(capMax) && capMax > 0 && (inscritosCount || 0) >= capMax) {
         return res.status(400).json({
           success: false,
-          message: 'Este curso ya alcanzó su capacidad máxima. No hay cupos disponibles.'
+          message: "Este curso ya alcanzó su capacidad máxima. No hay cupos disponibles."
         });
       }
 
       titulo = `Curso: ${curso.nombre}`;
       monto_total = Number(curso.precio);
       metadata = { ...metadata, curso_id: curso.id };
-    } else if (tipo_compra === 'clase_personalizada') {
+    } else if (tipo_compra === "clase_personalizada") {
       if (!clase_personalizada_id) {
-        return res.status(400).json({ success: false, message: 'clase_personalizada_id es requerido' });
+        return res.status(400).json({ success: false, message: "clase_personalizada_id es requerido" });
       }
 
       if (!fecha_hora) {
-        return res.status(400).json({ success: false, message: 'fecha_hora es requerida para clase_personalizada' });
+        return res.status(400).json({ success: false, message: "fecha_hora es requerida para clase_personalizada" });
       }
 
-      // ✅ FIX: bloquear solo si intentan agendar para HOY (día calendario), no "24h desde ahora"
+      // ✅ VALIDACIÓN CORRECTA: bloquear SOLO si es el mismo día calendario (en timezone del estudiante)
       const fechaClase = new Date(fecha_hora);
       if (Number.isNaN(fechaClase.getTime())) {
         return res.status(400).json({
           success: false,
-          message: 'fecha_hora inválida. Debe venir en formato ISO con zona horaria (ej: 2026-01-28T13:00:00.000Z).'
+          message:
+            "fecha_hora inválida. Debe venir en formato ISO con zona horaria (ej: 2026-01-28T13:00:00.000Z o con -05:00)."
         });
       }
 
-      // Comparación por día calendario en UTC (coherente si fecha_hora viene como ISO con "Z")
-      const ymdUTC = (d) => `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
-      const hoyUTC = ymdUTC(new Date());
+      const tz = estudianteTimeZone || "America/Bogota";
 
-      if (ymdUTC(fechaClase) === hoyUTC) {
+      const hoyEnTZ = ymdInTimeZone(new Date(), tz);
+      const fechaClaseEnTZ = ymdInTimeZone(fechaClase, tz);
+
+      if (fechaClaseEnTZ === hoyEnTZ) {
         return res.status(400).json({
           success: false,
-          message: 'No puedes agendar una clase para hoy. Elige desde mañana en adelante.'
+          message: "No puedes agendar una clase para hoy. Elige desde mañana en adelante."
         });
       }
 
       const { data: clase, error } = await supabase
-        .from('clase_personalizada')
-        .select('id,precio,duracion_horas,asignatura_id, asignatura:asignatura_id (id,nombre)')
-        .eq('id', clase_personalizada_id)
+        .from("clase_personalizada")
+        .select("id,precio,duracion_horas,asignatura_id, asignatura:asignatura_id (id,nombre)")
+        .eq("id", clase_personalizada_id)
         .single();
 
       if (error || !clase) {
-        return res.status(404).json({ success: false, message: 'Clase personalizada no encontrada' });
+        return res.status(404).json({ success: false, message: "Clase personalizada no encontrada" });
       }
 
       const asignacion = await asignarProfesorOptimo(
@@ -280,11 +294,11 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       if (!asignacion) {
         return res.status(400).json({
           success: false,
-          message: 'No hay disponibilidad de profesores para esa fecha y hora. Por favor elige otro horario.'
+          message: "No hay disponibilidad de profesores para esa fecha y hora. Por favor elige otro horario."
         });
       }
 
-      titulo = 'Clase personalizada';
+      titulo = "Clase personalizada";
       monto_total = Number(clase.precio);
 
       metadata = {
@@ -301,57 +315,52 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         asignatura_id: clase.asignatura_id,
         asignatura_nombre: clase?.asignatura?.nombre || null
       };
-    } else if (tipo_compra === 'paquete_horas') {
+    } else if (tipo_compra === "paquete_horas") {
       if (!clase_personalizada_id) {
-        return res.status(400).json({ success: false, message: 'clase_personalizada_id es requerido' });
+        return res.status(400).json({ success: false, message: "clase_personalizada_id es requerido" });
       }
 
       if (!cantidad_horas || Number(cantidad_horas) <= 0) {
-        return res.status(400).json({ success: false, message: 'cantidad_horas debe ser > 0' });
+        return res.status(400).json({ success: false, message: "cantidad_horas debe ser > 0" });
       }
 
       const { data: clase, error } = await supabase
-        .from('clase_personalizada')
-        .select('id,precio')
-        .eq('id', clase_personalizada_id)
+        .from("clase_personalizada")
+        .select("id,precio")
+        .eq("id", clase_personalizada_id)
         .single();
 
       if (error || !clase) {
-        return res.status(404).json({ success: false, message: 'Clase personalizada no encontrada' });
+        return res.status(404).json({ success: false, message: "Clase personalizada no encontrada" });
       }
 
       const horas = Number(cantidad_horas);
       titulo = `Paquete de horas (${horas}h)`;
 
-      // ✅ CAMBIO: aplicar 10% desde 2 horas
+      // aplicar 10% desde 2 horas
       const subtotal = Number(clase.precio) * horas;
       monto_total = horas >= 2 ? subtotal * 0.9 : subtotal;
 
       metadata = { ...metadata, clase_personalizada_id: clase.id, cantidad_horas: horas };
     } else {
-      return res.status(400).json({ success: false, message: 'tipo_compra inválido' });
+      return res.status(400).json({ success: false, message: "tipo_compra inválido" });
     }
 
     // 3) Crear compra pendiente
     const compraInsert = {
       estudiante_id,
       tipo_compra,
-      curso_id: tipo_compra === 'curso' ? curso_id : null,
-      clase_personalizada_id: tipo_compra !== 'curso' ? clase_personalizada_id : null,
+      curso_id: tipo_compra === "curso" ? curso_id : null,
+      clase_personalizada_id: tipo_compra !== "curso" ? clase_personalizada_id : null,
       monto_total,
-      estado_pago: 'pendiente',
+      estado_pago: "pendiente",
       fecha_compra: new Date().toISOString(),
-      proveedor_pago: 'mercadopago',
-      moneda: 'COP'
+      proveedor_pago: "mercadopago",
+      moneda: "COP"
     };
 
-    // no asignar horas aquí (se asignan en webhook)
-    if (tipo_compra === 'paquete_horas') {
-      // no-op
-    }
-
     const { data: compra, error: errCompra } = await supabase
-      .from('compra')
+      .from("compra")
       .insert([compraInsert])
       .select()
       .single();
@@ -359,12 +368,12 @@ export const crearCheckoutMercadoPago = async (req, res) => {
     if (errCompra) throw errCompra;
 
     // 3.1) Subir documento si viene (clase_personalizada)
-    if (tipo_compra === 'clase_personalizada' && req.file) {
+    if (tipo_compra === "clase_personalizada" && req.file) {
       if (req.file.size > MAX_FILE_BYTES) {
-        return res.status(400).json({ success: false, message: 'Archivo demasiado grande (máx 25MB).' });
+        return res.status(400).json({ success: false, message: "Archivo demasiado grande (máx 25MB)." });
       }
 
-      const mimetype = req.file.mimetype || 'application/octet-stream';
+      const mimetype = req.file.mimetype || "application/octet-stream";
       if (!ALLOWED_MIME.has(mimetype)) {
         return res.status(400).json({ success: false, message: `Tipo de archivo no permitido: ${mimetype}` });
       }
@@ -386,13 +395,13 @@ export const crearCheckoutMercadoPago = async (req, res) => {
     }
 
     // 4) Preferencia MP
-    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
     const BACKEND_PUBLIC_URL =
       process.env.BACKEND_PUBLIC_URL || `http://localhost:${process.env.PORT || 5000}`;
     const notification_url = `${BACKEND_PUBLIC_URL}/api/pagos/mercadopago/webhook`;
 
     const preferenceBody = {
-      items: [{ title: titulo, quantity: 1, currency_id: 'COP', unit_price: Number(monto_total) }],
+      items: [{ title: titulo, quantity: 1, currency_id: "COP", unit_price: Number(monto_total) }],
       external_reference: compra.id,
       metadata: { ...metadata, compra_id: compra.id },
       back_urls: {
@@ -408,15 +417,15 @@ export const crearCheckoutMercadoPago = async (req, res) => {
 
     // 5) Guardar mp_preference_id y mp_raw en compra
     const { error: errUpd } = await supabase
-      .from('compra')
+      .from("compra")
       .update({ mp_preference_id: preference_id, mp_raw: mpResp })
-      .eq('id', compra.id);
+      .eq("id", compra.id);
 
     if (errUpd) throw errUpd;
 
     return res.status(201).json({
       success: true,
-      message: 'Preferencia de MercadoPago creada',
+      message: "Preferencia de MercadoPago creada",
       data: {
         compra_id: compra.id,
         preference_id,
@@ -425,10 +434,10 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ Error creando checkout MercadoPago:', error);
+    console.error("❌ Error creando checkout MercadoPago:", error);
     return res.status(500).json({
       success: false,
-      message: 'Error creando checkout de MercadoPago',
+      message: "Error creando checkout de MercadoPago",
       error: error.message
     });
   }
