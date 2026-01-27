@@ -183,8 +183,7 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         month: "2-digit",
         day: "2-digit",
       });
-      // en-CA => "YYYY-MM-DD"
-      return fmt.format(date);
+      return fmt.format(date); // "YYYY-MM-DD"
     };
 
     // 2) Calcular monto_total y metadata
@@ -263,7 +262,6 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       }
 
       const tz = estudianteTimeZone || "America/Bogota";
-
       const hoyEnTZ = ymdInTimeZone(new Date(), tz);
       const fechaClaseEnTZ = ymdInTimeZone(fechaClase, tz);
 
@@ -404,10 +402,11 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       items: [{ title: titulo, quantity: 1, currency_id: "COP", unit_price: Number(monto_total) }],
       external_reference: compra.id,
       metadata: { ...metadata, compra_id: compra.id },
+      // ✅ CAMBIO: redirects unificados igual que Wompi
       back_urls: {
-        success: `${FRONTEND_URL}/pago/exitoso?compra_id=${compra.id}`,
-        pending: `${FRONTEND_URL}/pago/pendiente?compra_id=${compra.id}`,
-        failure: `${FRONTEND_URL}/pago/fallido?compra_id=${compra.id}`
+        success: `${FRONTEND_URL}/pago-exitoso?compraId=${compra.id}`,
+        pending: `${FRONTEND_URL}/pago-pendiente?compraId=${compra.id}`,
+        failure: `${FRONTEND_URL}/pago-fallido?compraId=${compra.id}`
       },
       notification_url
     };
