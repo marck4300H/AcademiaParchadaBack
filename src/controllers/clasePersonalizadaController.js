@@ -209,10 +209,16 @@ export const listClasesPersonalizadas = async (req, res) => {
       throw error;
     }
 
+    // ✅ ACTUALIZACIÓN: agregar descripcion_asignatura (plano) desde asignatura.descripcion
+    const clasesPersonalizadasConDescripcion = (clasesPersonalizadas || []).map((c) => ({
+      ...c,
+      descripcion_asignatura: c?.asignatura?.descripcion ?? null
+    }));
+
     return res.json({
       success: true,
       data: {
-        clases_personalizadas: clasesPersonalizadas || [],
+        clases_personalizadas: clasesPersonalizadasConDescripcion,
         pagination: {
           total: count || 0,
           page: parseInt(page),
@@ -265,10 +271,16 @@ export const getClasePersonalizadaById = async (req, res) => {
       });
     }
 
+    // ✅ ACTUALIZACIÓN: agregar descripcion_asignatura (plano) desde asignatura.descripcion
+    const clasePersonalizadaConDescripcion = {
+      ...clasePersonalizada,
+      descripcion_asignatura: clasePersonalizada?.asignatura?.descripcion ?? null
+    };
+
     return res.json({
       success: true,
       data: {
-        clase_personalizada: clasePersonalizada
+        clase_personalizada: clasePersonalizadaConDescripcion
       }
     });
   } catch (error) {
