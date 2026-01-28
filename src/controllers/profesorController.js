@@ -26,33 +26,54 @@ export const createProfesor = async (req, res) => {
   try {
     const { email, nombre, apellido, telefono, asignaturas, timezone } = req.body;
 
-    // 1. Verificar que el email no exista
-    const { data: existingUser } = await supabase
+    // 1) Verificar que el email no exista
+    const { data: existingUser, error: existingErr } = await supabase
       .from('usuario')
       .select('id')
       .eq('email', email)
-      .single();
+      .maybeSingle();
 
-    if (existingUser) {
+    if (existingErr) {
+      console.error('Error verificando email existente:', existingErr);
+      return res.status(500).json({
+        success: false,
+        message: 'Error verificando email del profesor',
+        error: existingErr.message
+      });
+    }
+
+    if (existingUser?.id) {
       return res.status(400).json({ success: false, message: 'El email ya está registrado' });
     }
 
-    // 2. Verificar que todas las asignaturas existan
+    // 2) Verificar asignaturas
     const { data: asignaturasExistentes, error: asignaturasError } = await supabase
       .from('asignatura')
       .select('id')
-      .in('id', asignaturas);
+      .in('id', asignaturas || []);
 
-    if (asignaturasError || asignaturasExistentes.length !== asignaturas.length) {
+    if (asignaturasError) {
+      return res.status(500).json({
+        success: false,
+        message: 'Error verificando asignaturas',
+        error: asignaturasError.message
+      });
+    }
+
+    if (!Array.isArray(asignaturas) || asignaturas.length === 0) {
+      return res.status(400).json({ success: false, message: 'asignaturas es obligatorio y debe ser un array con al menos 1 id' });
+    }
+
+    if ((asignaturasExistentes || []).length !== asignaturas.length) {
       return res.status(400).json({ success: false, message: 'Una o más asignaturas no existen' });
     }
 
-    // 3. Generar contraseña temporal y hashearla
+    // 3) Generar contraseña temporal y hashearla
     const tempPassword = generateTempPassword();
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(tempPassword, salt);
 
-    // 4. Crear usuario con rol 'profesor'
+    // 4) Crear usuario con rol 'profesor'
     const { data: newProfesor, error: insertError } = await supabase
       .from('usuario')
       .insert([
@@ -63,25 +84,25 @@ export const createProfesor = async (req, res) => {
           apellido,
           telefono: telefono || null,
           rol: 'profesor',
-          ...(timezone !== undefined ? { timezone } : {}),
-        },
+          ...(timezone !== undefined ? { timezone } : {})
+        }
       ])
       .select()
       .single();
 
-    if (insertError) {
+    if (insertError || !newProfesor?.id) {
       console.error('Error al crear profesor:', insertError);
       return res.status(500).json({
         success: false,
         message: 'Error al crear el profesor',
-        error: insertError.message,
+        error: insertError?.message
       });
     }
 
-    // 5. Insertar relaciones en profesor_asignatura
+    // 5) Insertar relaciones en profesor_asignatura
     const asignaturasRelaciones = asignaturas.map((asignaturaId) => ({
       profesor_id: newProfesor.id,
-      asignatura_id: asignaturaId,
+      asignatura_id: asignaturaId
     }));
 
     const { error: relacionError } = await supabase
@@ -96,41 +117,35 @@ export const createProfesor = async (req, res) => {
       return res.status(500).json({
         success: false,
         message: 'Error al asignar asignaturas al profesor',
-        error: relacionError.message,
+        error: relacionError.message
       });
     }
 
-    // 6. Enviar email con credenciales (CU-055)
+    // 6) Enviar email con credenciales (CU-055) usando emailService.js
+    // No se revienta la creación si el correo falla (se deja log).
     try {
-      await resend.emails.send({
-        from: process.env.EMAIL_FROM || 'onboarding@resend.dev',
+      await sendCredencialesProfesorEmail({
         to: email,
-        subject: 'Bienvenido a Academia Parchada - Credenciales de Profesor',
-        html: `
-
-Has sido registrado como
-
-**Profesor** en Academia Parchada.
-
-Tus credenciales de acceso son:
-
-**Importante:** Por seguridad, te recomendamos cambiar tu contraseña después de iniciar sesión.
-
-Puedes acceder a la plataforma en: ${process.env.FRONTEND_URL}... ¡Éxito en tus clases!`,
+        nombre: `${nombre} ${apellido}`.trim(),
+        email,
+        passwordTemp: tempPassword
       });
     } catch (emailError) {
-      console.error('Error al enviar email:', emailError);
-      // No fallar la creación si el email falla, solo registrar el error
+      console.error('Error al enviar email de credenciales (emailService):', emailError?.message || emailError);
     }
 
-    // 7. Obtener asignaturas para la respuesta
-    const { data: asignaturasData } = await supabase
+    // 7) Obtener asignaturas para la respuesta
+    const { data: asignaturasData, error: asigRespErr } = await supabase
       .from('asignatura')
       .select('id, nombre')
       .in('id', asignaturas);
 
-    // 8. Respuesta exitosa
-    res.status(201).json({
+    if (asigRespErr) {
+      console.error('Error trayendo asignaturas para respuesta:', asigRespErr);
+    }
+
+    // 8) Respuesta exitosa
+    return res.status(201).json({
       success: true,
       message: 'Profesor creado exitosamente',
       data: {
@@ -141,17 +156,23 @@ Puedes acceder a la plataforma en: ${process.env.FRONTEND_URL}... ¡Éxito en tu
           apellido: newProfesor.apellido,
           telefono: newProfesor.telefono,
           rol: newProfesor.rol,
-          asignaturas: asignaturasData,
+          timezone: newProfesor.timezone,
+          asignaturas: asignaturasData || []
         },
+        // ⚠️ Esto solo debería verse en admin; nunca exponerlo al front público.
         credenciales: {
-          email: email,
-          password_temporal: tempPassword,
-        },
-      },
+          email,
+          password_temporal: tempPassword
+        }
+      }
     });
   } catch (error) {
     console.error('Error en createProfesor:', error);
-    res.status(500).json({ success: false, message: 'Error interno del servidor', error: error.message });
+    return res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: error.message
+    });
   }
 };
 

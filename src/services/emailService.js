@@ -163,20 +163,55 @@ export const sendMeetLinkEmails = async ({ sesion, estudianteEmail, estudianteTi
 // Credenciales profesor (CU-055)
 // ============================================
 export const sendCredencialesProfesorEmail = async ({ to, nombre, email, passwordTemp }) => {
+  const loginUrl = process.env.FRONTEND_URL || 'https://parcheacademico.com';
+
   return sendEmailStrict(
     {
       to,
       subject: 'Credenciales de profesor - Parche Académico',
       html: wrapHtml(`
-        <h2>Cuenta de profesor creada ✅</h2>
-        <p><strong>Nombre:</strong> ${safe(nombre)}</p>
-        <p><strong>Email:</strong> ${safe(email)}</p>
-        <p><strong>Contraseña temporal:</strong> ${safe(passwordTemp)}</p>
+        <p>Estimado/a profesor/a${nombre ? ` ${safe(nombre)}` : ''},</p>
+
+        <p>
+          Nos complace informarle que ha sido registrado/a como <strong>Profesor</strong> en la plataforma Parche Académico.
+        </p>
+
+        <p>
+          A continuación, encontrará sus credenciales de acceso para ingresar al sistema académico:
+        </p>
+
+        <p>
+          &mdash;<br/>
+          <strong>Usuario:</strong> ${safe(email)}<br/>
+          <strong>Contraseña:</strong> ${safe(passwordTemp)}<br/>
+          &mdash;
+        </p>
+
+        <p><strong>🔐 Importante:</strong><br/>
+          Por motivos de seguridad, le recomendamos cambiar su contraseña una vez haya iniciado sesión por primera vez.
+        </p>
+
+        <p>
+          Puede acceder a la plataforma a través del siguiente enlace:<br/>
+          👉 <a href="${safe(loginUrl)}" target="_blank" rel="noopener noreferrer">${safe(loginUrl)}</a>
+        </p>
+
+        <p>
+          En Parche Académico valoramos su compromiso con la formación académica y nos alegra contar con su apoyo en el acompañamiento de nuestros estudiantes.<br/>
+          Quedamos atentos ante cualquier inquietud o requerimiento adicional.
+        </p>
+
+        <p>
+          Atentamente,<br/>
+          Equipo Parche Académico<br/>
+          🌐 <a href="https://parcheacademico.com" target="_blank" rel="noopener noreferrer">https://parcheacademico.com</a>
+        </p>
       `),
     },
     2
   );
 };
+
 
 // ======================================
 // Compra clase personalizada: Admin
