@@ -1,6 +1,8 @@
 import bcrypt from 'bcryptjs';
 import { supabase } from '../config/supabase.js';
 import { Resend } from 'resend';
+import { sendCredencialesProfesorEmail } from '../services/emailService.js';
+
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
