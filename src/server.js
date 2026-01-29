@@ -23,6 +23,10 @@ import cursoSesionesRoutes from './routes/cursoSesiones.routes.js';
 import documentosRoutes from './routes/documentos.routes.js';
 import disponibilidadRoutes from './routes/disponibilidad.routes.js'; 
 import categoriaRoutes from './routes/categoria.routes.js';
+import { startAutocompletarSesionesJob } from './jobs/autocompletarSesiones.job.js';
+import sesionesCancelRoutes from './routes/sesionesCancel.routes.js';
+
+startAutocompletarSesionesJob();
 
 
 
@@ -135,6 +139,7 @@ app.use('/api/cursos', cursoSesionesRoutes);
 app.use('/api/documentos', documentosRoutes);
 app.use('/api/disponibilidad', disponibilidadRoutes);
 app.use('/api/categorias', categoriaRoutes);
+app.use('/api/sesiones-cancel', sesionesCancelRoutes);
 
 
 

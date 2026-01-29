@@ -1036,3 +1036,70 @@ Si tú no solicitaste este cambio, puedes ignorar este correo.
     2
   );
 };
+export const sendSesionCanceladaAdminEmail = async ({ adminEmail, sesionId, compraId, motivo, profesor, estudiante, fechaHoraIso }) => {
+  const when = formatDateTimeInTZ(fechaHoraIso, DEFAULT_TZ);
+
+  return sendEmailStrict(
+    {
+      to: adminEmail,
+      subject: `Sesión cancelada #${safe(sesionId)}`,
+      html: wrapHtml(`
+        <h2>Sesión cancelada ⚠️</h2>
+        <p><strong>Sesión ID:</strong> ${safe(sesionId)}</p>
+        <p><strong>Compra ID:</strong> ${safe(compraId)}</p>
+        <p><strong>Fecha/Hora:</strong> ${safe(when)}</p>
+        ${motivo ? `<p><strong>Motivo:</strong> ${safe(motivo)}</p>` : ''}
+        <hr/>
+        <p><strong>Profesor:</strong> ${safe(profesor?.nombre)} ${safe(profesor?.apellido)} (${safe(profesor?.email)})</p>
+        <p><strong>Estudiante:</strong> ${safe(estudiante?.nombre)} ${safe(estudiante?.apellido)} (${safe(estudiante?.email)})</p>
+      `),
+    },
+    2
+  );
+};
+
+export const sendSesionCanceladaProfesorEmail = async ({ profesorEmail, sesionId, fechaHoraIso, profesorTimeZone, motivo }) => {
+  const when = formatDateTimeInTZ(fechaHoraIso, profesorTimeZone || DEFAULT_TZ);
+
+  return sendEmailStrict(
+    {
+      to: profesorEmail,
+      subject: 'Clase cancelada - Parche Académico',
+      html: wrapHtml(`
+        <h2>Clase cancelada ⚠️</h2>
+        <p>La siguiente sesión fue cancelada:</p>
+        <p><strong>Sesión ID:</strong> ${safe(sesionId)}</p>
+        <p><strong>Fecha y hora (tu zona):</strong> ${safe(when)}</p>
+        ${motivo ? `<p><strong>Motivo:</strong> ${safe(motivo)}</p>` : ''}
+        <p>Parche Académico</p>
+      `),
+    },
+    2
+  );
+};
+
+export const sendSesionCanceladaEstudianteEmail = async ({ estudianteEmail, sesionId, fechaHoraIso, estudianteTimeZone, montoTotal }) => {
+  const when = formatDateTimeInTZ(fechaHoraIso, estudianteTimeZone || DEFAULT_TZ);
+  const reembolso = Number(montoTotal || 0) * 0.8;
+
+  return sendEmailStrict(
+    {
+      to: estudianteEmail,
+      subject: 'Cancelación de clase confirmada - Parche Académico',
+      html: wrapHtml(`
+        <h2>Cancelación confirmada ✅</h2>
+        <p>Tu sesión fue cancelada correctamente.</p>
+        <p><strong>Sesión ID:</strong> ${safe(sesionId)}</p>
+        <p><strong>Fecha y hora:</strong> ${safe(when)}</p>
+        <hr/>
+        <p><strong>Política de reembolso:</strong> Se realizará la devolución del <strong>80%</strong> del valor pagado.</p>
+        <p><strong>Valor pagado:</strong> ${safe(montoTotal)} COP</p>
+        <p><strong>Valor estimado a devolver (80%):</strong> ${safe(reembolso)} COP</p>
+        <p>El tiempo de devolución depende del proveedor de pago.</p>
+        <p>Parche Académico</p>
+      `),
+    },
+    2
+  );
+};
+
