@@ -35,6 +35,30 @@ const ALLOWED_MIME = new Set([
   'image/webp',
   'text/plain'
 ]);
+const normalizeMpStatusToEstadoPago = (status) => {
+  const s = String(status || '').toLowerCase();
+  const isApproved = s === 'approved' || s === 'accredited';
+  if (isApproved) return 'completado';
+  if (s === 'rejected' || s === 'cancelled') return 'fallido';
+  return 'pendiente';
+};
+
+// ✅ Lock atómico para que SOLO 1 proceso haga el post-pago
+const tryLockPostPago = async (compraId) => {
+  const { data, error } = await supabase
+    .from('compra')
+    .update({
+      post_pago_procesado: true,
+      post_pago_procesado_at: new Date().toISOString()
+    })
+    .eq('id', compraId)
+    .eq('post_pago_procesado', false)
+    .select('id')
+    .maybeSingle();
+
+  if (error) throw error;
+  return !!data?.id;
+};
 
 const safeName = (name = 'archivo') =>
   String(name)
@@ -450,7 +474,7 @@ export const webhookMercadoPago = async (req, res) => {
 
     if (!topic || !id) return res.status(200).send('OK');
 
-    // idempotencia
+    // idempotencia por evento (evita reintentos exactos)
     const eventId = `${topic}:${id}`;
     const { data: yaProcesado } = await supabase
       .from('webhook_evento_pago')
@@ -468,6 +492,7 @@ export const webhookMercadoPago = async (req, res) => {
       payload: { query: req.query, body: req.body, headers: req.headers }
     }]);
 
+    // No procesar merchant_order (solo logging)
     if (topic === 'merchant_order') return res.status(200).send('OK');
 
     if (topic === 'payment' || topic === 'payment.updated') {
@@ -483,15 +508,9 @@ export const webhookMercadoPago = async (req, res) => {
 
       if (!external_reference) return res.status(200).send('OK');
 
-      const isApproved = status === 'approved' || status === 'accredited';
-      
-      const nuevoEstado =
-        isApproved
-          ? 'completado'
-          : status === 'rejected' || status === 'cancelled'
-            ? 'fallido'
-            : 'pendiente';
+      const nuevoEstado = normalizeMpStatusToEstadoPago(status);
 
+      // 1) Siempre actualizar la compra con lo último de MP
       await supabase
         .from('compra')
         .update({
@@ -504,8 +523,22 @@ export const webhookMercadoPago = async (req, res) => {
         })
         .eq('id', external_reference);
 
+      // 2) Si no es completado, salimos
       if (nuevoEstado !== 'completado') return res.status(200).send('OK');
 
+      // 3) ✅ Lock idempotente: si ya se procesó post-pago, no hacemos nada
+      let locked = false;
+      try {
+        locked = await tryLockPostPago(external_reference);
+      } catch (e) {
+        console.error('❌ Error tomando lock post_pago_procesado:', e?.message || e);
+        // Si no podemos tomar lock, NO hacemos post-pago (para evitar duplicar)
+        return res.status(200).send('OK');
+      }
+
+      if (!locked) return res.status(200).send('OK');
+
+      // 4) Ya con lock, hacemos post-pago una sola vez
       const { data: compra, error: errCompra } = await supabase
         .from('compra')
         .select('id, estudiante_id, tipo_compra, curso_id, clase_personalizada_id, mp_raw, horas_totales, horas_usadas, horas_disponibles')
@@ -517,7 +550,6 @@ export const webhookMercadoPago = async (req, res) => {
       // CURSO
       if (compra.tipo_compra === 'curso' && compra.curso_id) {
         try {
-          // idempotencia de inscripción: si ya existe, no duplicar
           const { data: existente, error: errExist } = await supabase
             .from('inscripcion_curso')
             .select('id')
@@ -539,7 +571,7 @@ export const webhookMercadoPago = async (req, res) => {
             if (errIns) throw errIns;
           }
 
-          // Vincular sesiones existentes del curso al estudiante (curso_sesion_estudiante)
+          // Vincular sesiones existentes del curso al estudiante
           try {
             const { data: sesiones, error: errSes } = await supabase
               .from('curso_sesion')
@@ -565,7 +597,6 @@ export const webhookMercadoPago = async (req, res) => {
           }
 
           await notifyCompraCursoAfterPaymentApproved({ compraId: compra.id });
-
           return res.status(200).send('OK');
         } catch (e) {
           console.error('❌ Error post-pago curso (inscripción/email):', e?.message || e);
@@ -612,6 +643,7 @@ export const webhookMercadoPago = async (req, res) => {
 
       // CLASE PERSONALIZADA
       if (compra.tipo_compra === 'clase_personalizada' && compra.clase_personalizada_id) {
+        // Con UNIQUE(compra_id) ya no debería duplicar, pero igual dejamos check
         const { data: sesionExist } = await supabase
           .from('sesion_clase')
           .select('id')
