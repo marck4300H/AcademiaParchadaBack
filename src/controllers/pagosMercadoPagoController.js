@@ -483,8 +483,10 @@ export const webhookMercadoPago = async (req, res) => {
 
       if (!external_reference) return res.status(200).send('OK');
 
+      const isApproved = status === 'approved' || status === 'accredited';
+      
       const nuevoEstado =
-        status === 'approved'
+        isApproved
           ? 'completado'
           : status === 'rejected' || status === 'cancelled'
             ? 'fallido'
