@@ -20,6 +20,23 @@ const computeEstadoPago = (status) => {
   return 'pendiente';
 };
 
+// ✅ Lock atómico (1 sola vez por compra)
+const tryLockPostPago = async (compraId) => {
+  const { data, error } = await supabase
+    .from('compra')
+    .update({
+      post_pago_procesado: true,
+      post_pago_procesado_at: new Date().toISOString()
+    })
+    .eq('id', compraId)
+    .eq('post_pago_procesado', false)
+    .select('id')
+    .maybeSingle();
+
+  if (error) throw error;
+  return !!data?.id;
+};
+
 const ejecutarPostPago = async (compra, paymentRaw) => {
   // CURSO
   if (compra.tipo_compra === 'curso' && compra.curso_id) {
@@ -45,7 +62,6 @@ const ejecutarPostPago = async (compra, paymentRaw) => {
         if (errIns) throw errIns;
       }
 
-      // Vincular sesiones existentes del curso al estudiante
       try {
         const { data: sesiones, error: errSes } = await supabase
           .from('curso_sesion')
@@ -178,7 +194,7 @@ const main = async () => {
 
     const { data: compras, error: errList } = await supabase
       .from('compra')
-      .select('id, estudiante_id, tipo_compra, curso_id, clase_personalizada_id, mp_payment_id, mp_raw, horas_totales, horas_usadas, horas_disponibles')
+      .select('id, estudiante_id, tipo_compra, curso_id, clase_personalizada_id, mp_payment_id, mp_raw, horas_totales, horas_usadas, horas_disponibles, post_pago_procesado')
       .eq('proveedor_pago', 'mercadopago')
       .eq('estado_pago', 'pendiente')
       .not('mp_payment_id', 'is', null)
@@ -191,6 +207,8 @@ const main = async () => {
     let updated = 0;
     let completed = 0;
     let failed = 0;
+    let postPagoSkipped = 0;
+    let postPagoLocked = 0;
 
     for (const compra of compras || []) {
       const paymentId = String(compra.mp_payment_id || '').trim();
@@ -230,13 +248,39 @@ const main = async () => {
 
       if (nuevoEstado === 'completado') {
         completed++;
+
+        // ✅ Lock: solo uno ejecuta post-pago
+        let locked = false;
+        try {
+          locked = await tryLockPostPago(compra.id);
+        } catch (e) {
+          console.error('❌ CRON: error tomando lock post_pago_procesado', compra.id, e?.message || e);
+          postPagoSkipped++;
+          continue;
+        }
+
+        if (!locked) {
+          postPagoSkipped++;
+          continue;
+        }
+
+        postPagoLocked++;
         await ejecutarPostPago(compra, payment);
       } else if (nuevoEstado === 'fallido') {
         failed++;
       }
     }
 
-    console.log(JSON.stringify({ ok: true, scanned, updated, completed, failed, limit: LIMIT }));
+    console.log(JSON.stringify({
+      ok: true,
+      scanned,
+      updated,
+      completed,
+      failed,
+      postPagoLocked,
+      postPagoSkipped,
+      limit: LIMIT
+    }));
     process.exit(0);
   } catch (e) {
     console.error('❌ CRON main error:', e?.message || e);
