@@ -432,7 +432,16 @@ export const crearCheckoutMercadoPago = async (req, res) => {
         pending: `${FRONTEND_URL}/pago-pendiente?compraId=${compra.id}`,
         failure: `${FRONTEND_URL}/pago-fallido?compraId=${compra.id}`
       },
-      notification_url
+      notification_url,
+      payment_methods: {
+        excluded_payment_types: [
+          { id: "account_money" },
+          { id: "ticket" },
+          { id: "bank_transfer" },
+          { id: "atm" },
+          { id: "prepaid_card" }
+        ]
+      }
     };
 
     const mpResp = await mpPreference.create({ body: preferenceBody });
