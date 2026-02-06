@@ -435,7 +435,6 @@ export const crearCheckoutMercadoPago = async (req, res) => {
       notification_url,
       payment_methods: {
         excluded_payment_types: [
-          { id: "account_money" },
           { id: "ticket" },
           { id: "bank_transfer" },
           { id: "atm" },
