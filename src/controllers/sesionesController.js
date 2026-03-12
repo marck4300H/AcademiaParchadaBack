@@ -32,6 +32,7 @@ export const listarSesionesPendientesLink = async (req, res) => {
         fecha_hora,
         estado,
         link_meet,
+        franja_horaria_ids,
         compra:compra_id (
           id,
           tipo_compra,
@@ -43,7 +44,6 @@ export const listarSesionesPendientesLink = async (req, res) => {
           ),
           clase_personalizada:clase_personalizada_id (
             id,
-            duracion_horas,
             asignatura:asignatura_id (
               id,
               nombre
@@ -88,10 +88,12 @@ export const listarSesionesPendientesLink = async (req, res) => {
       };
     });
 
-    // 2) Agregar duracion_horas plana al nivel de la sesión (si existe en clase_personalizada)
+    // 2) Calcular duracion_horas contando franjas horarias (cada franja = 1 hora)
     const sesionesConDuracion = sesionesConvertidas.map((s) => ({
       ...s,
-      duracion_horas: s?.compra?.clase_personalizada?.duracion_horas ?? null
+      duracion_horas: Array.isArray(s?.franja_horaria_ids)
+        ? s.franja_horaria_ids.length
+        : 0
     }));
 
     return res.status(200).json({

@@ -128,6 +128,7 @@ export const getMisClasesProfesor = async (req, res) => {
       claseMap = new Map((clases || []).map(c => [c.id, c]));
     }
 
+    // 3) Armar payload con duracion_horas calculada desde franja_horaria_ids
     const payload = sesionesConHoraLocal.map(s => {
       const estudiante = s?.compra?.estudiante_id
         ? (estudianteMap.get(s.compra.estudiante_id) || null)
@@ -140,7 +141,10 @@ export const getMisClasesProfesor = async (req, res) => {
       return {
         ...s,
         estudiante,
-        clase_personalizada
+        clase_personalizada,
+        duracion_horas: Array.isArray(s?.franja_horaria_ids)
+          ? s.franja_horaria_ids.length
+          : 0
       };
     });
 
@@ -164,7 +168,6 @@ export const getMisClasesProfesor = async (req, res) => {
     });
   }
 };
-
 
 /**
  * CU-041: Ver Mis Cursos Asignados (Profesor)
