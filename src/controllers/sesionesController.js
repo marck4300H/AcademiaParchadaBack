@@ -166,7 +166,7 @@ export const asignarLinkMeet = async (req, res) => {
       .from('sesion_clase')
       .update({ link_meet })
       .eq('id', sesionId)
-      .select('id, compra_id, profesor_id, fecha_hora, estado, link_meet')
+      .select('id, compra_id, profesor_id, fecha_hora, estado, link_meet, franja_horaria_ids')
       .single();
 
     if (updateError) {

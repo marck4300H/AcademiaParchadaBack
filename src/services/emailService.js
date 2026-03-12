@@ -144,20 +144,54 @@ export const sendWelcomeEmail = async ({ to, nombre }) => {
 export const sendMeetLinkEmails = async ({ sesion, estudianteEmail, estudianteTimeZone }) => {
   const when = formatDateTimeInTZ(sesion?.fecha_hora, estudianteTimeZone || DEFAULT_TZ);
   const link = sesion?.link_meet;
+  const duracion = Array.isArray(sesion?.franja_horaria_ids)
+    ? sesion.franja_horaria_ids.length
+    : null;
+  const duracionTexto = duracion ? `${duracion} hora${duracion > 1 ? 's' : ''}` : null;
 
   return sendEmailStrict(
     {
       to: estudianteEmail,
-      subject: 'Tu clase ya tiene link de Meet',
+      subject: '📅 Tu clase personalizada ya tiene enlace de Google Meet',
       html: wrapHtml(`
-        <h2>Link de tu clase listo ✅</h2>
-        <p><strong>Fecha y hora:</strong> ${safe(when)}</p>
-        <p><strong>Link Meet:</strong> <a href="${safe(link)}">${safe(link)}</a></p>
+        <h2 style="color:#1a1a2e;">¡Tu clase está lista para comenzar! 🎓</h2>
+        <p>Hola, te informamos que tu clase personalizada ya tiene enlace de Google Meet asignado. Aquí tienes todos los detalles:</p>
+
+        <table style="width:100%;border-collapse:collapse;margin:24px 0;">
+          <tr>
+            <td style="padding:12px 16px;background:#f5f7fa;border-radius:8px 8px 0 0;font-weight:bold;color:#555;width:40%;">📅 Fecha y hora</td>
+            <td style="padding:12px 16px;background:#f5f7fa;border-radius:8px 8px 0 0;color:#1a1a2e;">${safe(when)}</td>
+          </tr>
+          ${duracionTexto ? `
+          <tr>
+            <td style="padding:12px 16px;background:#fff;border-top:1px solid #e8e8e8;font-weight:bold;color:#555;">⏱️ Duración</td>
+            <td style="padding:12px 16px;background:#fff;border-top:1px solid #e8e8e8;color:#1a1a2e;">${safe(duracionTexto)}</td>
+          </tr>` : ''}
+          <tr>
+            <td style="padding:12px 16px;background:#f5f7fa;border-top:1px solid #e8e8e8;border-radius:0 0 8px 8px;font-weight:bold;color:#555;">🔗 Enlace Meet</td>
+            <td style="padding:12px 16px;background:#f5f7fa;border-top:1px solid #e8e8e8;border-radius:0 0 8px 8px;">
+              <a href="${safe(link)}" style="color:#4f46e5;font-weight:bold;text-decoration:none;">${safe(link)}</a>
+            </td>
+          </tr>
+        </table>
+
+        <div style="text-align:center;margin:32px 0;">
+          <a href="${safe(link)}"
+            style="background:#4f46e5;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-size:16px;font-weight:bold;display:inline-block;">
+            Unirme a la clase
+          </a>
+        </div>
+
+        <p style="color:#888;font-size:13px;">
+          Te recomendamos ingresar al enlace unos minutos antes de la hora programada para verificar tu conexión y audio.
+          Si tienes algún inconveniente, comunícate con nosotros lo antes posible.
+        </p>
       `),
     },
     2
   );
 };
+
 
 // ============================================
 // Credenciales profesor (CU-055)
