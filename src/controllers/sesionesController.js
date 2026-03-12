@@ -43,6 +43,7 @@ export const listarSesionesPendientesLink = async (req, res) => {
           ),
           clase_personalizada:clase_personalizada_id (
             id,
+            duracion_horas,
             asignatura:asignatura_id (
               id,
               nombre
@@ -87,9 +88,15 @@ export const listarSesionesPendientesLink = async (req, res) => {
       };
     });
 
+    // 2) Agregar duracion_horas plana al nivel de la sesión (si existe en clase_personalizada)
+    const sesionesConDuracion = sesionesConvertidas.map((s) => ({
+      ...s,
+      duracion_horas: s?.compra?.clase_personalizada?.duracion_horas ?? null
+    }));
+
     return res.status(200).json({
       success: true,
-      data: { sesiones: sesionesConvertidas }
+      data: { sesiones: sesionesConDuracion }
     });
   } catch (error) {
     console.error('❌ Error listarSesionesPendientesLink:', error);
@@ -182,7 +189,6 @@ export const asignarLinkMeet = async (req, res) => {
       message: 'Link de Meet asignado exitosamente',
       data: { sesion: updated }
     });
-
   } catch (error) {
     console.error('❌ Error asignarLinkMeet:', error);
     return res.status(500).json({
