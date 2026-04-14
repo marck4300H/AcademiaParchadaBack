@@ -46,7 +46,8 @@ const allowedOrigins = [
   'http://localhost:3000',
   'https://frontend-academic.vercel.app',
   'https://www.parcheacademico.com',
-  'https://parcheacademico.com'
+  'https://parcheacademico.com',
+  'https://frontend-academic-dev.vercel.app'
 ];
 
 const corsOptions = {
